@@ -118,6 +118,21 @@
   .bar{height:10px; background:#e5e9e7; border-radius:6px; overflow:hidden}
   .bar > span{display:block; height:100%; background:var(--route)}
 
+  /* changeset inspector (OSMCha-style) */
+  .cs.active{background:#eef5f1}
+  .cshead .when{font-family:'JetBrains Mono',monospace; color:var(--muted); font-size:12px}
+  .legend{display:flex; gap:14px; font-size:12px; color:var(--muted); margin:10px 0}
+  .legend i{display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:5px; vertical-align:-1px}
+  .badge{display:inline-block; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:.04em}
+  .badge.created{background:#e3f1e9; color:var(--route-dark)}
+  .badge.modified{background:#fbecd6; color:#8a560f}
+  .badge.deleted{background:#f7dedb; color:#8c2018}
+  .tagdiff{font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.5}
+  .tagdiff div{white-space:normal; word-break:break-word}
+  .diff-add{color:var(--route)}
+  .diff-del{color:var(--red)}
+  .diff-chg{color:var(--amber)}
+
   .hint{color:var(--muted); font-size:12px; margin-top:10px}
   .empty{color:var(--muted); text-align:center; padding:30px 10px}
   .row-actions{display:flex; gap:10px; margin-top:12px; flex-wrap:wrap}
@@ -189,7 +204,7 @@
         </div>
         <div>
           <div id="readout">
-            <div class="empty">Pick one or more changesets, then count.</div>
+            <div class="empty">Click a changeset to inspect its edits, or tick several and count their km.</div>
           </div>
         </div>
       </div>
@@ -281,7 +296,7 @@
   // =====================================================================
   let changesets = [];
   const selected = new Set();
-  let umap = null, ulayer = null;
+  const oscCache = new Map();   // changeset id -> OsmChange XML (shared by count + inspect)
 
   $("#fetch").addEventListener("click", () => loadChangesets(false));
   $("#older").addEventListener("click", () => loadChangesets(true));
@@ -339,19 +354,20 @@
     const list = $("#list");
     list.innerHTML = changesets.map(c=>{
       const when = c.created_at.replace("T"," ").replace(/:\d\dZ?$/,"");
-      return `<label class="cs">
+      return `<div class="cs" data-id="${c.id}">
         <input type="checkbox" class="csbox" data-id="${c.id}" ${selected.has(c.id)?"checked":""}>
-        <span style="flex:1">
+        <span class="csbody" data-id="${c.id}" style="flex:1; cursor:pointer">
           <span class="id">#${c.id}</span> <span class="when">${esc(when)}</span><br>
           <span class="cmt">${esc(c.comment)}</span> <span class="meta">· ${c.changes} chg</span>
         </span>
-      </label>`;
+      </div>`;
     }).join("");
     list.querySelectorAll(".csbox").forEach(cb=>cb.addEventListener("change",()=>{
       const id = Number(cb.dataset.id);
       cb.checked ? selected.add(id) : selected.delete(id);
       updateSel();
     }));
+    list.querySelectorAll(".csbody").forEach(el=>el.addEventListener("click",()=>inspectChangeset(Number(el.dataset.id))));
     const all = $("#selall"); all.checked=false;
     all.onchange = ()=>{
       list.querySelectorAll(".csbox").forEach(cb=>{
@@ -377,7 +393,7 @@
       let i=0;
       for(const cs of sel){
         setStatus(`Downloading changeset ${++i}/${sel.length} (#${cs.id})…`);
-        const xml = await httpGet(`${OSM}/changeset/${cs.id}/download`);
+        const xml = await getOsc(cs.id);
         const ids = editedWayIds(xml);
         csWays.set(cs.id, ids);
         ids.forEach(id=>allWays.add(id));
@@ -410,7 +426,7 @@
       });
 
       renderReadout({totalKm, ways, missing, perCs, highwaysOnly, csCount:sel.length});
-      drawMap("#map", drawn, () => { umap = null; });
+      drawMap("#map", drawn);
       setStatus("Done.");
     }catch(e){
       console.error(e);
@@ -474,11 +490,196 @@
     return lines.join("\n");
   }
 
+  // ---------- changeset inspector (OSMCha-style) ----------
+  const MAX_DIFF = 80;    // cap how many modified elements we fetch a "before" version for
+  const MAX_ROWS = 400;   // cap rows rendered in the attribute table
+
+  function setActiveRow(id){
+    document.querySelectorAll("#list .cs").forEach(el=>el.classList.toggle("active", Number(el.dataset.id)===id));
+  }
+
+  async function getOsc(id){
+    if(oscCache.has(id)) return oscCache.get(id);
+    const xml = await httpGet(`${OSM}/changeset/${id}/download`);
+    oscCache.set(id, xml);
+    return xml;
+  }
+
+  async function getChangesetMeta(id){
+    const json = JSON.parse(await httpGet(`${OSM}/changeset/${id}.json`));
+    return json.changeset || (json.elements && json.elements[0]) || {};
+  }
+
+  // Parse OsmChange XML -> {created,modified,deleted: [{type,id,version,lat,lon,tags,nodes}]}
+  function parseOsc(xml){
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const out = {created:[], modified:[], deleted:[]};
+    const map = {create:"created", modify:"modified", delete:"deleted"};
+    for(const action of ["create","modify","delete"]){
+      doc.querySelectorAll(action).forEach(block=>{
+        block.querySelectorAll("node,way,relation").forEach(el=>{
+          const tags = {};
+          el.querySelectorAll(":scope > tag").forEach(t=>tags[t.getAttribute("k")] = t.getAttribute("v"));
+          out[map[action]].push({
+            type: el.tagName.toLowerCase(),
+            id: Number(el.getAttribute("id")),
+            version: Number(el.getAttribute("version")),
+            lat: el.hasAttribute("lat") ? Number(el.getAttribute("lat")) : null,
+            lon: el.hasAttribute("lon") ? Number(el.getAttribute("lon")) : null,
+            tags,
+          });
+        });
+      });
+    }
+    return out;
+  }
+
+  function diffTags(oldT, newT){
+    const keys = new Set([...Object.keys(oldT||{}), ...Object.keys(newT||{})]);
+    const rows = [];
+    for(const k of keys){
+      const o = oldT ? oldT[k] : undefined, n = newT ? newT[k] : undefined;
+      if(o === n) continue;
+      rows.push({k, o, n, kind: o===undefined ? "added" : (n===undefined ? "removed" : "changed")});
+    }
+    return rows;
+  }
+
+  // Fetch the previous version's tags for modified elements (small concurrency pool).
+  async function fetchOldTags(elems){
+    const result = new Map();
+    let i = 0;
+    async function worker(){
+      while(i < elems.length){
+        const e = elems[i++];
+        if(!e.version || e.version < 2){ result.set(e.type+"/"+e.id, null); continue; }
+        try{
+          const j = JSON.parse(await httpGet(`${OSM}/${e.type}/${e.id}/${e.version-1}.json`));
+          const el = j.elements && j.elements[0];
+          result.set(e.type+"/"+e.id, el ? (el.tags||{}) : {});
+        }catch(_){ result.set(e.type+"/"+e.id, null); }
+      }
+    }
+    await Promise.all(Array.from({length: Math.min(5, elems.length)}, worker));
+    return result;
+  }
+
+  function buildRows(actions, oldTags){
+    const rows = [];
+    actions.created.forEach(e => rows.push({e, action:"created", diff: diffTags({}, e.tags)}));
+    actions.modified.forEach(e => {
+      const old = oldTags.has(e.type+"/"+e.id) ? oldTags.get(e.type+"/"+e.id) : null;
+      rows.push({e, action:"modified", diff: old===null ? null : diffTags(old, e.tags)});
+    });
+    actions.deleted.forEach(e => rows.push({e, action:"deleted", diff: diffTags(e.tags, {})}));
+    return rows;
+  }
+
+  // Build map features: current geometry for created/modified ways, point markers for tagged nodes.
+  async function buildFeatures(actions){
+    const wayIds = [...new Set([...actions.created, ...actions.modified].filter(e=>e.type==="way").map(e=>e.id))];
+    const geom = wayIds.length ? await wayGeometry(wayIds) : new Map();
+    const COL = {created:"#1C7A4B", modified:"#D9881F", deleted:"#C0392B"};
+    const lines = [], markers = [];
+    const handle = (arr, act) => {
+      for(const e of arr){
+        if(e.type === "way"){
+          const g = geom.get(e.id);
+          if(g && g.coords.length > 1) lines.push({coords:g.coords, color:COL[act]});
+        } else if(e.type === "node" && e.lat!=null && e.lon!=null && Object.keys(e.tags).length){
+          markers.push({lat:e.lat, lon:e.lon, color:COL[act]});
+        }
+      }
+    };
+    handle(actions.created, "created");
+    handle(actions.modified, "modified");
+    handle(actions.deleted, "deleted");   // deleted ways have no current geometry; deleted POI nodes still plot
+    return {lines, markers};
+  }
+
+  async function inspectChangeset(id){
+    setActiveRow(id);
+    $("#readout").innerHTML = `<div class="empty">Loading changeset #${id}…</div>`;
+    setStatus(`Loading changeset #${id}…`);
+    try{
+      const meta = await getChangesetMeta(id);
+      const actions = parseOsc(await getOsc(id));
+      const counts = {created:actions.created.length, modified:actions.modified.length, deleted:actions.deleted.length};
+
+      const modForDiff = actions.modified.slice(0, MAX_DIFF);
+      if(modForDiff.length){ setStatus(`Comparing ${modForDiff.length} modified element(s) to their previous version…`); }
+      const oldTags = await fetchOldTags(modForDiff);
+
+      setStatus("Fetching edit geometry…");
+      const features = await buildFeatures(actions);
+
+      renderChangesetDetail(meta, counts, buildRows(actions, oldTags), actions.modified.length - modForDiff.length);
+      drawEdits("#map", features.lines, features.markers, meta);
+      setStatus(`Changeset #${id}: ${counts.created} created · ${counts.modified} modified · ${counts.deleted} deleted.`);
+    }catch(e){
+      console.error(e);
+      const m = String(e.message||e);
+      setStatus(/HTTP (5\d\d|429)|busy|timeout/i.test(m) ? `Servers are busy (${m}). Wait ~30–60s and try again.` : "Error: "+m, true);
+      $("#readout").innerHTML = `<div class="empty">Couldn’t load that changeset — see the message above.</div>`;
+    }
+  }
+
+  function renderChangesetDetail(meta, counts, rows, undetailed){
+    const cmt = (meta.tags && meta.tags.comment) || "(no comment)";
+    const when = (meta.created_at||"").replace("T"," ").replace(/:\d\dZ?$/,"");
+    const extra = rows.length > MAX_ROWS ? rows.length - MAX_ROWS : 0;
+
+    const rowHtml = rows.slice(0, MAX_ROWS).map(r=>{
+      const e = r.e;
+      let attrs;
+      if(r.diff === null){
+        attrs = `<span style="color:var(--muted)">previous version unavailable</span>`;
+      }else if(!r.diff.length){
+        attrs = `<span style="color:var(--muted)">${r.action==="modified" ? "(geometry / no tag change)" : "(no tags)"}</span>`;
+      }else{
+        attrs = r.diff.map(d=>{
+          if(d.kind==="added")   return `<div class="diff-add">+ ${esc(d.k)}=${esc(d.n)}</div>`;
+          if(d.kind==="removed") return `<div class="diff-del">− ${esc(d.k)}=${esc(d.o)}</div>`;
+          return `<div class="diff-chg">~ ${esc(d.k)}: ${esc(d.o)} → ${esc(d.n)}</div>`;
+        }).join("");
+      }
+      return `<tr>
+        <td><a href="https://www.openstreetmap.org/${e.type}/${e.id}" target="_blank" rel="noopener">${e.type[0]}${e.id}</a></td>
+        <td><span class="badge ${r.action}">${r.action}</span></td>
+        <td class="tagdiff">${attrs}</td>
+      </tr>`;
+    }).join("");
+
+    $("#readout").innerHTML = `
+      <div class="cshead">
+        <div class="eyebrow">Changeset #${meta.id}</div>
+        <div style="font-weight:600; margin-top:3px">${esc(cmt)}</div>
+        <div class="when" style="margin-top:2px">${meta.user?`by ${esc(meta.user)} · `:""}${esc(when)}</div>
+        <div class="legend">
+          <span><i style="background:#1C7A4B"></i>created ${counts.created}</span>
+          <span><i style="background:#D9881F"></i>modified ${counts.modified}</span>
+          <span><i style="background:#C0392B"></i>deleted ${counts.deleted}</span>
+        </div>
+        <div class="row-actions" style="margin-top:0">
+          <a class="btn ghost" href="https://www.openstreetmap.org/changeset/${meta.id}" target="_blank" rel="noopener">OSM ↗</a>
+          <a class="btn ghost" href="https://osmcha.org/changesets/${meta.id}" target="_blank" rel="noopener">OSMCha ↗</a>
+        </div>
+      </div>
+      <div id="map"></div>
+      <div class="scrolltable" style="max-height:340px">
+        <table>
+          <thead><tr><th>Element</th><th>Change</th><th>Attributes</th></tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
+      ${extra?`<p class="hint">Showing first ${MAX_ROWS} of ${rows.length} elements.</p>`:""}
+      ${undetailed>0?`<p class="hint">${undetailed} modified element(s) beyond the first ${MAX_DIFF} not tag-diffed (large changeset).</p>`:""}
+      <p class="hint">Tag changes vs the previous version: <span class="diff-add">+ added</span>, <span class="diff-del">− removed</span>, <span class="diff-chg">~ changed</span>. Map shows current OSM geometry (deleted ways can't be drawn).</p>`;
+  }
+
   // =====================================================================
   // ROAD MODE
   // =====================================================================
-  let rmap = null, rlayer = null;
-
   $("#rfetch").addEventListener("click", inspectRoad);
 
   function setRStatus(msg, isErr){
@@ -522,7 +723,7 @@
         return;
       }
       renderRoad(ways, {by, q, cc});
-      drawMap("#rmap", ways.map(w=>w.coords), () => { rmap = null; }, true);
+      drawMap("#rmap", ways.map(w=>w.coords));
       setRStatus(`Done — ${ways.length} way(s).`);
     }catch(e){
       console.error(e);
@@ -671,14 +872,13 @@
     return 2*R*Math.asin(Math.sqrt(s));
   }
 
-  // generic map drawer. sel = "#map"/"#rmap". reset() clears the cached instance
-  // for that selector so a freshly re-injected div gets a new Leaflet map.
   const maps = {};       // selector -> Leaflet map
   const layers = {};     // selector -> layer group
-  function drawMap(sel, polys, _unusedReset){
-    const el = $(sel); if(!el) return;
-    // The readout HTML is rebuilt each run, so the old map node is detached.
-    // Detect that and rebuild rather than reuse a stale instance.
+
+  // Returns a fresh layer group on the map for `sel`, (re)creating the map when
+  // its container div has been re-injected (the readout HTML is rebuilt each run).
+  function ensureMap(sel){
+    const el = $(sel); if(!el) return null;
     if(maps[sel] && maps[sel].getContainer() !== el){ maps[sel] = null; }
     if(!maps[sel]){
       maps[sel] = L.map(el);
@@ -688,14 +888,37 @@
     }
     if(layers[sel]) layers[sel].remove();
     layers[sel] = L.layerGroup().addTo(maps[sel]);
+    return maps[sel];
+  }
+
+  function drawMap(sel, polys){
+    const map = ensureMap(sel); if(!map) return;
     const bounds=[];
     polys.forEach(coords=>{
       if(!coords||coords.length<2) return;
       L.polyline(coords,{color:"#1C7A4B",weight:4,opacity:.85}).addTo(layers[sel]);
       coords.forEach(c=>bounds.push(c));
     });
-    if(bounds.length) maps[sel].fitBounds(bounds,{padding:[20,20]});
-    setTimeout(()=>maps[sel].invalidateSize(),50);
+    if(bounds.length) map.fitBounds(bounds,{padding:[20,20]});
+    setTimeout(()=>map.invalidateSize(),50);
+  }
+
+  // Color-coded highlight for a single changeset's edits.
+  function drawEdits(sel, lines, markers, meta){
+    const map = ensureMap(sel); if(!map) return;
+    const bounds=[];
+    lines.forEach(l=>{
+      L.polyline(l.coords,{color:l.color,weight:5,opacity:.9}).addTo(layers[sel]);
+      l.coords.forEach(c=>bounds.push(c));
+    });
+    markers.forEach(m=>{
+      L.circleMarker([m.lat,m.lon],{radius:5,color:m.color,fillColor:m.color,fillOpacity:.8,weight:2}).addTo(layers[sel]);
+      bounds.push([m.lat,m.lon]);
+    });
+    if(bounds.length) map.fitBounds(bounds,{padding:[25,25]});
+    else if(meta && meta.minlat!=null) map.fitBounds([[meta.minlat,meta.minlon],[meta.maxlat,meta.maxlon]],{padding:[25,25]});
+    else map.setView([0,0],2);
+    setTimeout(()=>map.invalidateSize(),50);
   }
 
   function copyCsv(text, btn){
