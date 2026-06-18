@@ -75,7 +75,7 @@ Severity legend: 🔴 blocks/breaks routing · 🟠 degrades guidance · 🟡 co
 
 ## 6. Phasing & milestones
 
-- **M1 (MVP):** Ordered route assembly + C1, C2, C3 + report card + CSV. → demoable KR 3 deliverable.
+- **M1 (MVP):** ✅ *Done (2026-06-18, deployed).* Ordered route assembly + C1, C2, C3 + report card + issues table + issues CSV + "ways by ref" search.
 - **M2:** C4 (turn restrictions) + C5 (ref/name continuity).
 - **M3:** C6, C7, polish (deep-links, severity tuning).
 
