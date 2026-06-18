@@ -835,9 +835,9 @@
         const t = el.tags||{};
         const coords = el.geometry.map(g=>[g.lat,g.lon]);
         const last = coords.length-1;
-        // endpoint keys for connectivity: node id when available, else rounded coord
+        // node keys for connectivity: node id when available, else rounded coord
         const useNodes = Array.isArray(el.nodes) && el.nodes.length===coords.length;
-        const keyAt = i => useNodes ? "n"+el.nodes[i] : coords[i][0].toFixed(7)+","+coords[i][1].toFixed(7);
+        const nodeKeys = coords.map((c,i)=> useNodes ? "n"+el.nodes[i] : c[0].toFixed(7)+","+c[1].toFixed(7));
         ways.push({
           id: el.id,
           km: polylineKm(el.geometry),
@@ -849,7 +849,8 @@
           highway: t.highway || "",
           oneway: (t.oneway || (t.junction==="roundabout" ? "yes" : "")).toLowerCase(),
           coords,
-          endKeys: [keyAt(0), keyAt(last)],
+          nodeKeys,
+          endKeys: [nodeKeys[0], nodeKeys[last]],
         });
       }
       if(!ways.length){
@@ -858,7 +859,8 @@
         return;
       }
       const route = assembleRoute(ways);
-      let issues = runChecks(ways, route);
+      const comps = connectedComponents(ways);   // real connectivity (routing islands)
+      let issues = runChecks(ways, route, comps);
 
       // C4 — turn restrictions (needs a second Overpass query; non-fatal if it fails)
       let restrictionCount = 0;
@@ -873,9 +875,9 @@
       }catch(e){ console.warn("turn-restriction check skipped:", e); }
 
       roadIssues = issues;
-      renderRoad(ways, {by, q, cc}, route, issues, {restrictionCount});
+      renderRoad(ways, {by, q, cc}, route, issues, {restrictionCount, components: comps.length});
       drawRoute("#rmap", ways, issues);
-      setRStatus(`Done — ${ways.length} way(s), ${route.length} connected piece(s), ${restrictionCount} turn restriction(s), ${issues.length} issue(s).`);
+      setRStatus(`Done — ${ways.length} way(s), ${comps.length} connected component(s), ${restrictionCount} turn restriction(s), ${issues.length} issue(s).`);
     }catch(e){
       console.error(e);
       const m = String(e.message||e);
@@ -964,23 +966,52 @@
   function leftCoord(ways, it){ const w=ways[it.wi]; return it.forward ? w.coords[0] : w.coords[w.coords.length-1]; }
   function rightCoord(ways, it){ const w=ways[it.wi]; return it.forward ? w.coords[w.coords.length-1] : w.coords[0]; }
 
+  // Real connectivity: union-find over ALL shared nodes (not just endpoints), so
+  // ways meeting at a junction count as connected. Returns arrays of way indices,
+  // one per connected component, largest (by km) first — "routing islands" = the rest.
+  function connectedComponents(ways){
+    const parent = ways.map((_,i)=>i);
+    const find = x => { while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
+    const union = (a,b) => { const ra=find(a), rb=find(b); if(ra!==rb) parent[ra]=rb; };
+    const firstWayAt = new Map();   // node key -> first way index seen
+    ways.forEach((w,wi)=>{
+      for(const k of w.nodeKeys){
+        if(firstWayAt.has(k)) union(wi, firstWayAt.get(k));
+        else firstWayAt.set(k, wi);
+      }
+    });
+    const comps = new Map();
+    ways.forEach((w,wi)=>{ const r=find(wi); if(!comps.has(r)) comps.set(r,[]); comps.get(r).push(wi); });
+    const arr = [...comps.values()];
+    const kmOf = comp => comp.reduce((s,i)=>s+ways[i].km, 0);
+    arr.sort((a,b)=> kmOf(b)-kmOf(a));
+    return arr;
+  }
+
   // ---------- the checks ----------
-  function runChecks(ways, route){
+  function runChecks(ways, route, comps){
     const issues = [];
     const link = w => `https://www.openstreetmap.org/way/${w.id}`;
     const josm = w => `https://www.openstreetmap.org/edit?way=${w.id}`;
     const at = c => c ? {lat:c[0], lon:c[1]} : null;
 
-    // C1 — connectivity / continuity
-    if(route.length > 1){
-      route.forEach((seg,i)=>{
-        if(i===0) return;   // first piece is the "spine"
-        const head = seg[0], coord = leftCoord(ways, head);
-        const w = ways[head.wi];
+    // C1 — connectivity (routing islands): anything not in the main component.
+    // comps[0] is the largest (the route's main body); the rest are islands.
+    if(comps && comps.length > 1){
+      const MAX_ISLANDS = 25;
+      const islands = comps.slice(1);
+      islands.slice(0, MAX_ISLANDS).forEach(comp=>{
+        const w = ways[comp[0]];
+        const kmSum = comp.reduce((s,i)=>s+ways[i].km, 0);
         issues.push({sev:"high", check:"Connectivity",
-          detail:`Disconnected piece ${i+1} of ${route.length} — this segment's end doesn't meet the rest of the route (starts at ${ways[head.wi].name}).`,
-          where: at(coord), link: link(w), josm: josm(w), wayId: w.id});
+          detail:`Routing island — ${comp.length} way(s), ${kmSum.toFixed(2)} km, not connected to the main route (e.g. ${w.name}). Routing can't cross into this segment.`,
+          where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
       });
+      if(islands.length > MAX_ISLANDS){
+        issues.push({sev:"high", check:"Connectivity",
+          detail:`…and ${islands.length-MAX_ISLANDS} more disconnected island(s). The route is highly fragmented — check whether the search pulled in unrelated ways.`,
+          where: null, link: null, josm: null, wayId: null});
+      }
     }
 
     // C2 — oneway consistency (per connected piece)
@@ -1191,7 +1222,7 @@
     const scorecard = `
       <div class="scorecard">
         <div class="score"><div class="v">${pct}%</div><div class="k">maxspeed coverage</div></div>
-        <div class="score"><div class="v">${route.length}</div><div class="k">connected piece${route.length===1?"":"s"}</div></div>
+        <div class="score"><div class="v">${extra.components!=null?extra.components:route.length}</div><div class="k">connected component${(extra.components!=null?extra.components:route.length)===1?"":"s"}</div></div>
         <div class="score"><div class="v">${extra.restrictionCount||0}</div><div class="k">turn restrictions</div></div>
         <div class="score"><div class="v"><span class="sev high"></span>${nHigh}</div><div class="k">blocking</div></div>
         <div class="score"><div class="v"><span class="sev med"></span>${nMed}</div><div class="k">guidance</div></div>
@@ -1242,7 +1273,7 @@
         <button id="rcsv" class="btn ghost">Copy ways CSV</button>
         <button id="rdl" class="btn ghost">Download ways CSV</button>
       </div>
-      <p class="hint">A route should be one connected piece. Checks: <b>connectivity</b> (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠), <b>turn restrictions</b> — structurally broken <code>type=restriction</code> relations (🟠), and <b>ref continuity</b> — ref changes or missing refs along the route (🟡). Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
+      <p class="hint">A route should be one connected component. Checks: <b>connectivity</b> — "routing islands" not joined to the main route by any shared node (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠), <b>turn restrictions</b> — structurally broken <code>type=restriction</code> relations (🟠), and <b>ref continuity</b> — ref changes or missing refs along the route (🟡). Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
 
     // maxspeed distribution sidebar
     const distRows = [...dist.entries()].sort((a,b)=>b[1].km-a[1].km).map(([k,d])=>`<tr>
