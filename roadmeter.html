@@ -261,13 +261,21 @@
             <option value="FR">France</option>
           </select>
         </div>
+        <div class="field">
+          <label class="lbl" for="rmatch">Match</label>
+          <select id="rmatch">
+            <option value="exact" selected>Exact keyword</option>
+            <option value="almost">Almost (partial)</option>
+          </select>
+        </div>
         <button id="rfetch" class="btn">Inspect road</button>
       </div>
       <label class="check"><input id="rhwy" type="checkbox" checked> Highways only (ways tagged <code>highway=*</code>)</label>
       <div class="hint" style="margin-top:8px">
         <b>One value:</b> type the name or ref — e.g. <code>Quốc lộ 51</code>.<br>
         <b>Multiple values:</b> separate variants with <code>;</code> to match any — e.g. <code>QL1; Quốc lộ 1; QL.1</code> (useful when OSM tags the same road inconsistently).<br>
-        Matching is case-insensitive and partial.
+        <b>Match — Exact:</b> the value must equal the keyword (or contain it as a <code>;</code>-list item, so <code>QL1</code> matches <code>QL1;AH1</code> but not <code>QL1A</code>).
+        <b>Almost:</b> substring match (<code>QL1</code> also catches <code>QL1A</code>, <code>QL12</code>). Always case-insensitive.
       </div>
       <div id="rstatus" class="status"></div>
     </section>
@@ -806,6 +814,7 @@
     const by = $("#rsearchby").value;
     const q = $("#rquery").value.trim();
     const cc = $("#rcountry").value;
+    const match = $("#rmatch").value;
     const highwaysOnly = $("#rhwy").checked;
     if(!q){ setRStatus("Enter a name, ref, or relation id.", true); return; }
     if(by === "relid" && !/^\d+$/.test(q)){ setRStatus("Relation id must be numeric.", true); return; }
@@ -818,7 +827,7 @@
     setRStatus("Querying Overpass…");
 
     try{
-      const query = roadQuery(by, q, cc, highwaysOnly);
+      const query = roadQuery(by, q, cc, highwaysOnly, match);
       const json = await overpass(query);
       const ways = [];
       for(const el of (json.elements||[])){
@@ -878,17 +887,22 @@
   // Build a case-insensitive regex alternation from a ";"-separated list of
   // variants, so one search catches the inconsistent ways OSM tags a road
   // (e.g. "QL1; Quốc lộ 1; QL.1"). Each variant is regex-escaped, then OR-joined.
-  function altRegex(q){
+  //   exact = match the whole tag value, or the keyword as a token inside an
+  //           OSM ";"-separated list (e.g. "QL1" within "QL1;AH1").
+  //   almost = substring match (the keyword anywhere in the value).
+  function altRegex(q, exact){
     const terms = q.split(/[;\n]/).map(s=>s.trim()).filter(Boolean);
-    return (terms.length ? terms : [q]).map(escapeRe).join("|");
+    const esc = (terms.length ? terms : [q]).map(escapeRe);
+    if(exact) return esc.map(t=>`(^|;) *${t} *($|;)`).join("|");
+    return esc.join("|");
   }
 
-  function roadQuery(by, q, cc, highwaysOnly){
+  function roadQuery(by, q, cc, highwaysOnly, match){
     const hwy = highwaysOnly ? '["highway"]' : "";
     if(by === "relid"){
       return `[out:json][timeout:90];relation(${Number(q)});way(r)${hwy};out tags geom;`;
     }
-    const re = altRegex(q);
+    const re = altRegex(q, match === "exact");
     let area = "", inArea = "";
     if(cc){
       area = `area["ISO3166-1"="${cc}"][admin_level=2]->.a;`;
