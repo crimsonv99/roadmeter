@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmeter — OSM edit mileage & road inspector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --paper:#EEF1EF; --panel:#FFFFFF; --ink:#161A18; --muted:#5C6661;
+    --hairline:#D9DEDC; --asphalt:#23282C;
+    --route:#1C7A4B; --route-dark:#135734; --amber:#D9881F; --red:#C0392B;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:Inter,system-ui,sans-serif; font-size:15px; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:28px 20px 60px}
+  a{color:var(--route)}
+
+  /* header */
+  header.top{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:22px; flex-wrap:wrap}
+  .brand{display:flex; align-items:center; gap:14px}
+  .post-ico{width:30px; height:38px; flex:none}
+  h1{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:26px; letter-spacing:-.02em; margin:0; line-height:1}
+  .tag{color:var(--muted); font-size:13px; margin-top:5px}
+  .howto{font-size:13px; color:var(--muted)}
+
+  .card{background:var(--panel); border:1px solid var(--hairline); border-radius:var(--radius); padding:18px}
+  .card + .card{margin-top:18px}
+
+  .eyebrow{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted)}
+
+  /* mode tabs */
+  .tabs{display:flex; gap:8px; margin-bottom:18px}
+  .tab{
+    font:inherit; font-weight:600; cursor:pointer; border:1px solid var(--hairline);
+    border-radius:8px; padding:9px 16px; background:#fff; color:var(--muted);
+  }
+  .tab.active{background:var(--route); color:#fff; border-color:var(--route)}
+  .tab:hover:not(.active){background:#f3f5f4}
+
+  /* search form */
+  .form-row{display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:12px}
+  .field{display:flex; flex-direction:column; gap:5px}
+  .field.grow{flex:1; min-width:220px}
+  label.lbl{font-size:12px; font-weight:600; color:var(--muted)}
+  input[type=text],input[type=date],select{
+    font:inherit; padding:9px 11px; border:1px solid var(--hairline); border-radius:8px; background:#fff; color:var(--ink);
+  }
+  input[type=text]{font-family:'JetBrains Mono',monospace}
+  input:focus,select:focus{outline:2px solid var(--route); outline-offset:1px; border-color:var(--route)}
+  .check{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink); margin-top:12px}
+  .btn{
+    font:inherit; font-weight:600; cursor:pointer; border:none; border-radius:8px;
+    padding:10px 18px; background:var(--route); color:#fff;
+  }
+  .btn:hover{background:var(--route-dark)}
+  .btn.ghost{background:#fff; color:var(--ink); border:1px solid var(--hairline)}
+  .btn.ghost:hover{background:#f3f5f4}
+  .btn:disabled{opacity:.5; cursor:default}
+  .btn.block{width:100%; padding:13px; font-size:15px}
+
+  .status{font-size:13px; color:var(--muted); min-height:18px; margin-top:12px}
+  .status.err{color:var(--red)}
+
+  /* results grid */
+  .results{display:grid; grid-template-columns:1.1fr .9fr; gap:18px; margin-top:18px}
+  @media(max-width:820px){ .results{grid-template-columns:1fr} }
+
+  /* changeset list */
+  .list-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px}
+  .selall{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--muted); cursor:pointer}
+  .list{max-height:420px; overflow:auto; border:1px solid var(--hairline); border-radius:8px}
+  .cs{display:flex; gap:10px; padding:9px 11px; border-bottom:1px solid var(--hairline); cursor:pointer}
+  .cs:last-child{border-bottom:none}
+  .cs:hover{background:#f5f7f6}
+  .cs input{margin-top:3px}
+  .cs .id{font-family:'JetBrains Mono',monospace; font-weight:700}
+  .cs .when{font-family:'JetBrains Mono',monospace; color:var(--muted); font-size:12px}
+  .cs .cmt{color:var(--ink); font-size:13px}
+  .cs .meta{color:var(--muted); font-size:12px; font-family:'JetBrains Mono',monospace}
+
+  /* km post signature */
+  .post{position:relative; text-align:center; padding-top:8px}
+  .post .cap{
+    width:190px; height:30px; margin:0 auto; background:var(--red);
+    border-radius:95px 95px 8px 8px;
+  }
+  .post .face{
+    width:190px; margin:0 auto; background:#fff; border:1px solid var(--hairline); border-top:none;
+    border-radius:0 0 8px 8px; padding:16px 10px 18px;
+    box-shadow:0 1px 0 rgba(0,0,0,.04);
+  }
+  .post .kmnum{font-family:'JetBrains Mono',monospace; font-weight:700; font-size:46px; line-height:1; letter-spacing:-.02em}
+  .post .kmunit{font-family:'Space Grotesk',sans-serif; font-weight:600; color:var(--muted); font-size:13px; margin-top:4px; text-transform:uppercase; letter-spacing:.12em}
+  .post .sub{font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--muted); margin-top:12px}
+  .post .stem{width:14px; height:26px; margin:0 auto; background:linear-gradient(#fff,#eceeed); border:1px solid var(--hairline); border-top:none; border-radius:0 0 3px 3px}
+
+  /* breakdown */
+  table{width:100%; border-collapse:collapse; font-size:13px; margin-top:14px}
+  th,td{text-align:left; padding:7px 6px; border-bottom:1px solid var(--hairline)}
+  th{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600}
+  td.num,th.num{text-align:right; font-family:'JetBrains Mono',monospace}
+  .scrolltable{max-height:300px; overflow:auto}
+  #map{height:300px; border-radius:8px; border:1px solid var(--hairline); margin-top:14px}
+
+  /* coverage bar */
+  .cover{margin-top:14px}
+  .cover .lbl2{display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-bottom:4px}
+  .bar{height:10px; background:#e5e9e7; border-radius:6px; overflow:hidden}
+  .bar > span{display:block; height:100%; background:var(--route)}
+
+  .hint{color:var(--muted); font-size:12px; margin-top:10px}
+  .empty{color:var(--muted); text-align:center; padding:30px 10px}
+  .row-actions{display:flex; gap:10px; margin-top:12px; flex-wrap:wrap}
+  @media(prefers-reduced-motion:no-preference){
+    .card,.post{animation:rise .4s ease both}
+    @keyframes rise{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg class="post-ico" viewBox="0 0 30 38" aria-hidden="true">
+        <rect x="3" y="2" width="24" height="9" rx="4.5" fill="#C0392B"/>
+        <rect x="3" y="11" width="24" height="16" rx="2" fill="#fff" stroke="#D9DEDC"/>
+        <text x="15" y="23" font-family="JetBrains Mono, monospace" font-size="8" font-weight="700" text-anchor="middle" fill="#161A18">KM</text>
+        <rect x="12.5" y="27" width="5" height="9" fill="#eceeed" stroke="#D9DEDC"/>
+      </svg>
+      <div>
+        <h1>Roadmeter</h1>
+        <div class="tag">OSM edit mileage by contributor, and maxspeed/length inspection by road.</div>
+      </div>
+    </div>
+    <div class="howto">OSM API + Overpass · runs in your browser</div>
+  </header>
+
+  <!-- MODE TABS -->
+  <div class="tabs">
+    <button id="tab-user" class="tab active">By contributor</button>
+    <button id="tab-road" class="tab">By road</button>
+  </div>
+
+  <!-- ================= CONTRIBUTOR MODE ================= -->
+  <div id="mode-user">
+    <section class="card">
+      <div class="eyebrow">Find a contributor</div>
+      <div class="form-row">
+        <div class="field grow">
+          <label class="lbl" for="user">OSM username</label>
+          <input id="user" type="text" placeholder="e.g. Atem" autocomplete="off">
+        </div>
+        <div class="field">
+          <label class="lbl" for="from">From</label>
+          <input id="from" type="date">
+        </div>
+        <div class="field">
+          <label class="lbl" for="to">To</label>
+          <input id="to" type="date">
+        </div>
+        <button id="fetch" class="btn">Find changesets</button>
+      </div>
+      <label class="check"><input id="hwy" type="checkbox" checked> Count highways only (ways tagged <code>highway=*</code>)</label>
+      <div id="status" class="status"></div>
+    </section>
+
+    <section id="resultsCard" class="card" style="display:none">
+      <div class="list-head">
+        <div class="eyebrow">Changesets — newest first</div>
+        <label class="selall"><input id="selall" type="checkbox"> select all · <span id="selcount">0 selected</span></label>
+      </div>
+      <div class="results">
+        <div>
+          <div id="list" class="list"></div>
+          <div class="row-actions">
+            <button id="older" class="btn ghost">Load older</button>
+            <button id="count" class="btn">Count km for selected</button>
+          </div>
+        </div>
+        <div>
+          <div id="readout">
+            <div class="empty">Pick one or more changesets, then count.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ================= ROAD MODE ================= -->
+  <div id="mode-road" style="display:none">
+    <section class="card">
+      <div class="eyebrow">Inspect a road</div>
+      <div class="form-row">
+        <div class="field">
+          <label class="lbl" for="rsearchby">Search by</label>
+          <select id="rsearchby">
+            <option value="relname">Relation by name</option>
+            <option value="relref">Relation by ref</option>
+            <option value="relid">Relation by id</option>
+          </select>
+        </div>
+        <div class="field grow">
+          <label class="lbl" for="rquery">Name / ref / id</label>
+          <input id="rquery" type="text" placeholder="e.g. Quốc lộ 51" autocomplete="off">
+        </div>
+        <div class="field">
+          <label class="lbl" for="rcountry">Country</label>
+          <select id="rcountry">
+            <option value="">(any)</option>
+            <option value="VN" selected>Vietnam</option>
+            <option value="TH">Thailand</option>
+            <option value="MY">Malaysia</option>
+            <option value="ID">Indonesia</option>
+            <option value="PH">Philippines</option>
+            <option value="SG">Singapore</option>
+            <option value="KH">Cambodia</option>
+            <option value="LA">Laos</option>
+            <option value="US">United States</option>
+            <option value="GB">United Kingdom</option>
+            <option value="DE">Germany</option>
+            <option value="FR">France</option>
+          </select>
+        </div>
+        <button id="rfetch" class="btn">Inspect road</button>
+      </div>
+      <label class="check"><input id="rhwy" type="checkbox" checked> Highways only (ways tagged <code>highway=*</code>)</label>
+      <div id="rstatus" class="status"></div>
+    </section>
+
+    <section id="rresultsCard" class="card" style="display:none">
+      <div class="eyebrow">Road profile</div>
+      <div class="results">
+        <div>
+          <div id="rreadout"><div class="empty">Search a road to see its profile.</div></div>
+        </div>
+        <div>
+          <div id="rsidebar"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  const OSM = "https://api.openstreetmap.org/api/0.6";
+  const EPOCH = "2004-01-01T00:00:00Z";
+  const OVERPASS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+
+  const $ = s => document.querySelector(s);
+
+  // ---------- mode switching ----------
+  $("#tab-user").addEventListener("click", () => setMode("user"));
+  $("#tab-road").addEventListener("click", () => setMode("road"));
+  function setMode(m){
+    const user = m === "user";
+    $("#tab-user").classList.toggle("active", user);
+    $("#tab-road").classList.toggle("active", !user);
+    $("#mode-user").style.display = user ? "" : "none";
+    $("#mode-road").style.display = user ? "none" : "";
+  }
+
+  // =====================================================================
+  // CONTRIBUTOR MODE
+  // =====================================================================
+  let changesets = [];
+  const selected = new Set();
+  let umap = null, ulayer = null;
+
+  $("#fetch").addEventListener("click", () => loadChangesets(false));
+  $("#older").addEventListener("click", () => loadChangesets(true));
+  $("#count").addEventListener("click", countSelected);
+
+  function setStatus(msg, isErr){
+    const el = $("#status"); el.textContent = msg || "";
+    el.classList.toggle("err", !!isErr);
+  }
+
+  async function loadChangesets(older){
+    const user = $("#user").value.trim();
+    if(!user){ setStatus("Enter an OSM username first.", true); return; }
+    const fromD = $("#from").value, toD = $("#to").value;
+    const fromISO = fromD ? `${fromD}T00:00:00Z` : EPOCH;
+    let toISO = toD ? `${toD}T23:59:59Z` : null;
+
+    if(older && changesets.length){
+      toISO = changesets[changesets.length-1].created_at;   // page backwards
+    } else if(!older){
+      changesets = []; selected.clear();
+    }
+
+    let url = `${OSM}/changesets.json?display_name=${encodeURIComponent(user)}`;
+    if(toISO) url += `&time=${encodeURIComponent(fromISO)},${encodeURIComponent(toISO)}`;
+    else if(fromD) url += `&time=${encodeURIComponent(fromISO)}`;
+
+    setStatus(older ? "Loading older changesets…" : "Finding changesets…");
+    try{
+      const json = JSON.parse(await httpGet(url));
+      const incoming = (json.changesets||[]).map(c => ({
+        id:c.id, created_at:c.created_at,
+        changes: c.changes_count!=null ? c.changes_count : (c.changes||0),
+        comment: (c.tags&&c.tags.comment) || "(no comment)",
+      }));
+      const seen = new Set(changesets.map(c=>c.id));
+      for(const c of incoming) if(!seen.has(c.id)) changesets.push(c);
+      changesets.sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
+
+      if(!changesets.length){
+        setStatus(`No changesets for "${user}" in that range, or the user is unknown.`, true);
+        $("#resultsCard").style.display="none";
+        return;
+      }
+      setStatus(`Loaded ${changesets.length} changeset(s)${incoming.length===100?' — full page, use “Load older” for more.':'.'}`);
+      $("#resultsCard").style.display="";
+      renderList();
+    }catch(e){
+      console.error(e);
+      setStatus(/HTTP 404/.test(String(e)) ? `User "${user}" not found.` : "Couldn’t reach the OSM API: "+(e.message||e), true);
+    }
+  }
+
+  function renderList(){
+    const list = $("#list");
+    list.innerHTML = changesets.map(c=>{
+      const when = c.created_at.replace("T"," ").replace(/:\d\dZ?$/,"");
+      return `<label class="cs">
+        <input type="checkbox" class="csbox" data-id="${c.id}" ${selected.has(c.id)?"checked":""}>
+        <span style="flex:1">
+          <span class="id">#${c.id}</span> <span class="when">${esc(when)}</span><br>
+          <span class="cmt">${esc(c.comment)}</span> <span class="meta">· ${c.changes} chg</span>
+        </span>
+      </label>`;
+    }).join("");
+    list.querySelectorAll(".csbox").forEach(cb=>cb.addEventListener("change",()=>{
+      const id = Number(cb.dataset.id);
+      cb.checked ? selected.add(id) : selected.delete(id);
+      updateSel();
+    }));
+    const all = $("#selall"); all.checked=false;
+    all.onchange = ()=>{
+      list.querySelectorAll(".csbox").forEach(cb=>{
+        cb.checked = all.checked;
+        const id=Number(cb.dataset.id);
+        all.checked ? selected.add(id) : selected.delete(id);
+      });
+      updateSel();
+    };
+    updateSel();
+  }
+  function updateSel(){ $("#selcount").textContent = `${selected.size} selected`; }
+
+  async function countSelected(){
+    if(!selected.size){ setStatus("Select at least one changeset.", true); return; }
+    const highwaysOnly = $("#hwy").checked;
+    const btn = $("#count"); btn.disabled=true;
+    $("#readout").innerHTML = `<div class="empty">Working…</div>`;
+    try{
+      const sel = changesets.filter(c=>selected.has(c.id));
+      const csWays = new Map();          // csId -> Set(wayId)
+      const allWays = new Set();
+      let i=0;
+      for(const cs of sel){
+        setStatus(`Downloading changeset ${++i}/${sel.length} (#${cs.id})…`);
+        const xml = await httpGet(`${OSM}/changeset/${cs.id}/download`);
+        const ids = editedWayIds(xml);
+        csWays.set(cs.id, ids);
+        ids.forEach(id=>allWays.add(id));
+      }
+      if(!allWays.size){
+        setStatus("Those changesets created/modified no ways (nodes or relations only).");
+        $("#readout").innerHTML = `<div class="empty">No ways to measure.</div>`;
+        return;
+      }
+      setStatus(`Fetching geometry for ${allWays.size} way(s)…`);
+      const geom = await wayGeometry([...allWays]);   // id -> {km,highway,coords,ref,maxspeed}
+
+      let totalKm=0, ways=0, missing=0;
+      const drawn=[];
+      for(const id of allWays){
+        const g = geom.get(id);
+        if(!g){ missing++; continue; }
+        if(highwaysOnly && !g.highway) continue;
+        totalKm += g.km; ways++;
+        drawn.push(g.coords);
+      }
+      const perCs = sel.map(cs=>{
+        let km=0,n=0;
+        for(const id of csWays.get(cs.id)){
+          const g=geom.get(id);
+          if(!g || (highwaysOnly && !g.highway)) continue;
+          km+=g.km; n++;
+        }
+        return {id:cs.id, km, n};
+      });
+
+      renderReadout({totalKm, ways, missing, perCs, highwaysOnly, csCount:sel.length});
+      drawMap("#map", drawn, () => { umap = null; });
+      setStatus("Done.");
+    }catch(e){
+      console.error(e);
+      const m = String(e.message||e);
+      setStatus(/HTTP (5\d\d|429)|busy|timeout/i.test(m) ? `Servers are busy (${m}). Wait ~30–60s and try again.` : "Error: "+m, true);
+      $("#readout").innerHTML = `<div class="empty">Couldn’t finish — see the message above.</div>`;
+    }finally{ btn.disabled=false; }
+  }
+
+  function editedWayIds(xml){
+    const ids=new Set();
+    const doc=new DOMParser().parseFromString(xml,"application/xml");
+    ["create","modify"].forEach(a=>{
+      doc.querySelectorAll(`${a} way`).forEach(w=>{
+        const id=Number(w.getAttribute("id")); if(id>0) ids.add(id);
+      });
+    });
+    return ids;
+  }
+
+  function renderReadout(r){
+    const kind = r.highwaysOnly ? "highway" : "way";
+    const post = `
+      <div class="post">
+        <div class="cap"></div>
+        <div class="face">
+          <div class="kmnum">${r.totalKm.toFixed(1)}</div>
+          <div class="kmunit">km edited</div>
+          <div class="sub">${r.ways} ${kind}s · ${r.csCount} changeset(s)${r.missing?` · ${r.missing} gone`:""}</div>
+        </div>
+        <div class="stem"></div>
+      </div>`;
+
+    const rows = r.perCs.map(c=>`<tr>
+        <td><a href="https://www.openstreetmap.org/changeset/${c.id}" target="_blank" rel="noopener">#${c.id}</a></td>
+        <td class="num">${c.n}</td><td class="num">${c.km.toFixed(2)}</td>
+      </tr>`).join("");
+
+    $("#readout").innerHTML = post + `
+      <div class="scrolltable">
+      <table>
+        <thead><tr><th>Changeset</th><th class="num">${kind}s</th><th class="num">km</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      </div>
+      <div class="row-actions">
+        <button id="csv" class="btn ghost">Copy CSV</button>
+        <button id="dl" class="btn ghost">Download CSV</button>
+      </div>
+      <div id="map"></div>
+      <p class="hint">The big number counts each ${kind} once. Per-changeset rows can overlap, so they may sum higher. Lengths use current OSM geometry; ways deleted since are marked “gone”.</p>`;
+
+    $("#csv").onclick = e => copyCsv(userCsv(r), e.target);
+    $("#dl").onclick = () => downloadCsv(userCsv(r), "roadmeter-user.csv");
+  }
+
+  function userCsv(r){
+    const lines=["changeset_id,ways,km"];
+    r.perCs.forEach(c=>lines.push(`${c.id},${c.n},${c.km.toFixed(3)}`));
+    lines.push(`TOTAL_unique,${r.ways},${r.totalKm.toFixed(3)}`);
+    return lines.join("\n");
+  }
+
+  // =====================================================================
+  // ROAD MODE
+  // =====================================================================
+  let rmap = null, rlayer = null;
+
+  $("#rfetch").addEventListener("click", inspectRoad);
+
+  function setRStatus(msg, isErr){
+    const el = $("#rstatus"); el.textContent = msg || "";
+    el.classList.toggle("err", !!isErr);
+  }
+
+  async function inspectRoad(){
+    const by = $("#rsearchby").value;
+    const q = $("#rquery").value.trim();
+    const cc = $("#rcountry").value;
+    const highwaysOnly = $("#rhwy").checked;
+    if(!q){ setRStatus("Enter a name, ref, or relation id.", true); return; }
+    if(by === "relid" && !/^\d+$/.test(q)){ setRStatus("Relation id must be numeric.", true); return; }
+
+    const btn = $("#rfetch"); btn.disabled = true;
+    $("#rresultsCard").style.display = "";
+    $("#rreadout").innerHTML = `<div class="empty">Querying Overpass…</div>`;
+    $("#rsidebar").innerHTML = "";
+    setRStatus("Querying Overpass…");
+
+    try{
+      const query = roadQuery(by, q, cc, highwaysOnly);
+      const json = await overpass(query);
+      const ways = [];
+      for(const el of (json.elements||[])){
+        if(el.type!=="way"||!el.geometry) continue;
+        const t = el.tags||{};
+        ways.push({
+          id: el.id,
+          km: polylineKm(el.geometry),
+          maxspeed: parseMaxspeed(t),
+          name: t.ref || t.name || "(unnamed)",
+          highway: t.highway || "",
+          coords: el.geometry.map(g=>[g.lat,g.lon]),
+        });
+      }
+      if(!ways.length){
+        setRStatus(`No ways found for that ${by==='relid'?'relation id':'search'}${cc?` in ${cc}`:""}. Try a different term or country.`, true);
+        $("#rreadout").innerHTML = `<div class="empty">No ways to inspect.</div>`;
+        return;
+      }
+      renderRoad(ways, {by, q, cc});
+      drawMap("#rmap", ways.map(w=>w.coords), () => { rmap = null; }, true);
+      setRStatus(`Done — ${ways.length} way(s).`);
+    }catch(e){
+      console.error(e);
+      const m = String(e.message||e);
+      setRStatus(/HTTP (5\d\d|429)|busy|timeout/i.test(m) ? `Servers are busy (${m}). Wait ~30–60s and try again.` : "Error: "+m, true);
+      $("#rreadout").innerHTML = `<div class="empty">Couldn’t finish — see the message above.</div>`;
+    }finally{ btn.disabled = false; }
+  }
+
+  function roadQuery(by, q, cc, highwaysOnly){
+    const hwy = highwaysOnly ? '["highway"]' : "";
+    if(by === "relid"){
+      return `[out:json][timeout:90];relation(${Number(q)});way(r)${hwy};out tags geom;`;
+    }
+    const re = escapeRe(q);
+    const key = by === "relref" ? "ref" : "name";
+    let area = "", inArea = "";
+    if(cc){
+      area = `area["ISO3166-1"="${cc}"][admin_level=2]->.a;`;
+      inArea = "(area.a)";
+    }
+    return `[out:json][timeout:90];${area}relation${inArea}["${key}"~"${re}",i];way(r)${hwy};out tags geom;`;
+  }
+
+  function renderRoad(ways, ctx){
+    let totalKm = 0, withSpeed = 0, kmWithSpeed = 0;
+    const dist = new Map();   // maxspeed string -> {ways, km}
+    for(const w of ways){
+      totalKm += w.km;
+      if(w.maxspeed != null){
+        withSpeed++; kmWithSpeed += w.km;
+        const k = String(w.maxspeed);
+        const d = dist.get(k) || {ways:0, km:0};
+        d.ways++; d.km += w.km; dist.set(k, d);
+      }
+    }
+    const pct = totalKm ? Math.round(100*kmWithSpeed/totalKm) : 0;
+
+    // big km post
+    const post = `
+      <div class="post">
+        <div class="cap"></div>
+        <div class="face">
+          <div class="kmnum">${totalKm.toFixed(1)}</div>
+          <div class="kmunit">km of road</div>
+          <div class="sub">${ways.length} ways · ${withSpeed} with maxspeed</div>
+        </div>
+        <div class="stem"></div>
+      </div>`;
+
+    // per-way table (sorted by km desc)
+    const sorted = [...ways].sort((a,b)=>b.km-a.km);
+    const wayRows = sorted.map(w=>`<tr>
+        <td><a href="https://www.openstreetmap.org/way/${w.id}" target="_blank" rel="noopener">${esc(w.name)}</a></td>
+        <td class="num">${w.km.toFixed(2)}</td>
+        <td class="num">${w.maxspeed==null?'—':esc(String(w.maxspeed))}</td>
+      </tr>`).join("");
+
+    $("#rreadout").innerHTML = post + `
+      <div class="cover">
+        <div class="lbl2"><span>maxspeed coverage (by length)</span><span>${pct}%</span></div>
+        <div class="bar"><span style="width:${pct}%"></span></div>
+      </div>
+      <div class="scrolltable">
+      <table>
+        <thead><tr><th>Way (ref/name)</th><th class="num">km</th><th class="num">maxspeed</th></tr></thead>
+        <tbody>${wayRows}</tbody>
+      </table>
+      </div>
+      <div class="row-actions">
+        <button id="rcsv" class="btn ghost">Copy CSV</button>
+        <button id="rdl" class="btn ghost">Download CSV</button>
+      </div>
+      <div id="rmap"></div>
+      <p class="hint">Lengths use current OSM geometry summed per way. Coverage is the share of total length on ways that carry a <code>maxspeed</code> tag.</p>`;
+
+    // sidebar: maxspeed distribution
+    const distRows = [...dist.entries()].sort((a,b)=>b[1].km-a[1].km).map(([k,d])=>`<tr>
+        <td>${esc(k)}</td><td class="num">${d.ways}</td><td class="num">${d.km.toFixed(2)}</td>
+      </tr>`).join("");
+    const noSpeedKm = totalKm - kmWithSpeed, noSpeedWays = ways.length - withSpeed;
+    const noneRow = noSpeedWays ? `<tr>
+        <td style="color:var(--muted)">— (none)</td><td class="num">${noSpeedWays}</td><td class="num">${noSpeedKm.toFixed(2)}</td>
+      </tr>` : "";
+
+    $("#rsidebar").innerHTML = `
+      <div class="eyebrow">maxspeed distribution</div>
+      <div class="scrolltable">
+      <table>
+        <thead><tr><th>km/h</th><th class="num">ways</th><th class="num">km</th></tr></thead>
+        <tbody>${distRows}${noneRow}</tbody>
+      </table>
+      </div>`;
+
+    $("#rcsv").onclick = e => copyCsv(roadCsv(sorted), e.target);
+    $("#rdl").onclick = () => downloadCsv(roadCsv(sorted), "roadmeter-road.csv");
+  }
+
+  function roadCsv(ways){
+    const lines=["way_id,name_or_ref,km,maxspeed,highway"];
+    ways.forEach(w=>lines.push([w.id, csvCell(w.name), w.km.toFixed(3), w.maxspeed==null?"":csvCell(String(w.maxspeed)), csvCell(w.highway)].join(",")));
+    return lines.join("\n");
+  }
+
+  // parse maxspeed like the WME script did: number when possible, else raw string
+  function parseMaxspeed(tags){
+    const raw = tags.maxspeed || tags["maxspeed:forward"] || tags["maxspeed:backward"];
+    if(!raw) return null;
+    const m = String(raw).match(/\d+/);
+    return m ? Number(m[0]) : String(raw);
+  }
+
+  // =====================================================================
+  // SHARED
+  // =====================================================================
+  async function wayGeometry(ids){
+    const map=new Map(), CHUNK=500;
+    for(let i=0;i<ids.length;i+=CHUNK){
+      const chunk=ids.slice(i,i+CHUNK);
+      const q=`[out:json][timeout:120];way(id:${chunk.join(",")});out geom tags;`;
+      const json=await overpass(q);
+      for(const el of (json.elements||[])){
+        if(el.type!=="way"||!el.geometry) continue;
+        const t=el.tags||{};
+        map.set(el.id,{
+          km: polylineKm(el.geometry),
+          highway: !!t.highway,
+          ref: t.ref||t.name||"",
+          maxspeed: parseMaxspeed(t),
+          coords: el.geometry.map(g=>[g.lat,g.lon]),
+        });
+      }
+    }
+    return map;
+  }
+
+  function polylineKm(geom){
+    let m=0;
+    for(let i=0;i<geom.length-1;i++) m+=haversine(geom[i].lat,geom[i].lon,geom[i+1].lat,geom[i+1].lon);
+    return m/1000;
+  }
+  function haversine(la1,lo1,la2,lo2){
+    const R=6371000, r=Math.PI/180;
+    const dLa=(la2-la1)*r, dLo=(lo2-lo1)*r;
+    const s=Math.sin(dLa/2)**2+Math.cos(la1*r)*Math.cos(la2*r)*Math.sin(dLo/2)**2;
+    return 2*R*Math.asin(Math.sqrt(s));
+  }
+
+  // generic map drawer. sel = "#map"/"#rmap". reset() clears the cached instance
+  // for that selector so a freshly re-injected div gets a new Leaflet map.
+  const maps = {};       // selector -> Leaflet map
+  const layers = {};     // selector -> layer group
+  function drawMap(sel, polys, _unusedReset){
+    const el = $(sel); if(!el) return;
+    // The readout HTML is rebuilt each run, so the old map node is detached.
+    // Detect that and rebuild rather than reuse a stale instance.
+    if(maps[sel] && maps[sel].getContainer() !== el){ maps[sel] = null; }
+    if(!maps[sel]){
+      maps[sel] = L.map(el);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
+        maxZoom:19, attribution:"© OpenStreetMap"
+      }).addTo(maps[sel]);
+    }
+    if(layers[sel]) layers[sel].remove();
+    layers[sel] = L.layerGroup().addTo(maps[sel]);
+    const bounds=[];
+    polys.forEach(coords=>{
+      if(!coords||coords.length<2) return;
+      L.polyline(coords,{color:"#1C7A4B",weight:4,opacity:.85}).addTo(layers[sel]);
+      coords.forEach(c=>bounds.push(c));
+    });
+    if(bounds.length) maps[sel].fitBounds(bounds,{padding:[20,20]});
+    setTimeout(()=>maps[sel].invalidateSize(),50);
+  }
+
+  function copyCsv(text, btn){
+    navigator.clipboard.writeText(text).then(()=>{
+      const o=btn.textContent; btn.textContent="Copied!"; setTimeout(()=>btn.textContent=o,1500);
+    }).catch(()=>{ console.log(text); btn.textContent="See console"; });
+  }
+  function downloadCsv(text, name){
+    const blob=new Blob([text],{type:"text/csv"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download=name; a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  function csvCell(s){ s=String(s); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }
+
+  // ---------- net ----------
+  function httpGet(url){
+    return fetch(url).then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.text(); });
+  }
+  async function overpass(query){
+    let last;
+    for(const url of OVERPASS){
+      try{
+        const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"data="+encodeURIComponent(query)});
+        if(!res.ok){ last=new Error("HTTP "+res.status+" from "+host(url)); continue; }
+        const t=(await res.text()).trim();
+        if(t.startsWith("{")||t.startsWith("[")) return JSON.parse(t);
+        last=new Error("Overpass busy at "+host(url));
+      }catch(e){ last=e; }
+    }
+    throw last||new Error("All Overpass endpoints failed");
+  }
+  function host(u){ try{return new URL(u).host;}catch(e){return u;} }
+  function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+  function escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\"]/g,"\\$&"); }
+})();
+</script>
+</body>
+</html>
