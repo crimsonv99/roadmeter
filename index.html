@@ -835,6 +835,8 @@
           maxspeed: parseMaxspeed(t),
           maxspeedRaw: t.maxspeed || t["maxspeed:forward"] || t["maxspeed:backward"] || "",
           name: t.ref || t.name || "(unnamed)",
+          ref: t.ref || "",
+          roadName: t.name || "",
           highway: t.highway || "",
           oneway: (t.oneway || (t.junction==="roundabout" ? "yes" : "")).toLowerCase(),
           coords,
@@ -847,11 +849,24 @@
         return;
       }
       const route = assembleRoute(ways);
-      const issues = runChecks(ways, route);
+      let issues = runChecks(ways, route);
+
+      // C4 — turn restrictions (needs a second Overpass query; non-fatal if it fails)
+      let restrictionCount = 0;
+      setRStatus("Checking turn restrictions…");
+      try{
+        const restrictions = await fetchRestrictions(ways);
+        restrictionCount = restrictions.length;
+        if(restrictions.length){
+          issues = issues.concat(checkRestrictions(restrictions));
+          sortIssues(issues);
+        }
+      }catch(e){ console.warn("turn-restriction check skipped:", e); }
+
       roadIssues = issues;
-      renderRoad(ways, {by, q, cc}, route, issues);
+      renderRoad(ways, {by, q, cc}, route, issues, {restrictionCount});
       drawRoute("#rmap", ways, issues);
-      setRStatus(`Done — ${ways.length} way(s), ${route.length} connected piece(s), ${issues.length} issue(s).`);
+      setRStatus(`Done — ${ways.length} way(s), ${route.length} connected piece(s), ${restrictionCount} turn restriction(s), ${issues.length} issue(s).`);
     }catch(e){
       console.error(e);
       const m = String(e.message||e);
@@ -1022,14 +1037,116 @@
       }
     });
 
+    // C5 — ref / name continuity
+    route.forEach(seg=>{
+      const seen = new Set();   // dedupe identical transitions within a piece
+      for(let i=0;i<seg.length-1;i++){
+        const a = ways[seg[i].wi], b = ways[seg[i+1].wi];
+        if(a.ref && b.ref && a.ref !== b.ref){
+          const key = a.ref+"|"+b.ref;
+          if(seen.has(key)) continue;
+          seen.add(key);
+          issues.push({sev:"low", check:"Ref continuity",
+            detail:`Ref changes ${a.ref} → ${b.ref} along the route.`,
+            where: at(rightCoord(ways, seg[i])), link: link(b), josm: josm(b), wayId: b.id});
+        }
+      }
+    });
+    // aggregated missing ref (only when the route mostly carries a ref)
+    const refWays = ways.filter(w=>w.ref).length;
+    if(refWays >= Math.max(2, ways.length*0.3)){
+      let miss=0, missKm=0, first=null;
+      ways.forEach(w=>{ if(!w.ref && (!$("#rhwy").checked || w.highway)){ miss++; missKm+=w.km; if(!first) first=w; } });
+      if(miss && first){
+        issues.push({sev:"low", check:"Ref continuity",
+          detail:`${miss} way(s) (${missKm.toFixed(1)} km) have no ref, though the route mostly does.`,
+          where: at(midCoord(first)), link: link(first), josm: josm(first), wayId: first.id});
+      }
+    }
+
+    sortIssues(issues);
+    return issues;
+  }
+
+  function sortIssues(issues){
     const rank = {high:0, med:1, low:2};
     issues.sort((x,y)=>rank[x.sev]-rank[y.sev]);
     return issues;
   }
-
   function midCoord(w){ return w && w.coords.length ? w.coords[Math.floor(w.coords.length/2)] : null; }
 
-  function renderRoad(ways, ctx, route, issues){
+  // ---------- C4: turn restrictions ----------
+  // Fetch type=restriction relations referencing any of the route's ways.
+  async function fetchRestrictions(ways){
+    const ids = ways.map(w=>w.id);
+    if(!ids.length) return [];
+    const CHUNK = 600, seen = new Set(), out = [];
+    for(let i=0;i<ids.length;i+=CHUNK){
+      const chunk = ids.slice(i, i+CHUNK);
+      const q = `[out:json][timeout:90];way(id:${chunk.join(",")})->.w;relation(bw.w)["type"="restriction"];out geom;`;
+      const json = await overpass(q);
+      for(const el of (json.elements||[])){
+        if(el.type!=="relation" || seen.has(el.id)) continue;
+        seen.add(el.id);
+        out.push(parseRestriction(el));
+      }
+    }
+    return out;
+  }
+
+  function parseRestriction(el){
+    const t = el.tags || {};
+    const restriction = t.restriction || t["restriction:conditional"] || t["restriction:hgv"] || t["restriction:motorcar"] || "";
+    const r = {id: el.id, restriction, from:[], to:[], via:[], viaWays:[]};
+    (el.members||[]).forEach(m=>{
+      if(m.type==="node"){
+        if(m.role==="via" && m.lat!=null) r.via.push({ref:m.ref, coord:[m.lat, m.lon]});
+      }else if(m.type==="way"){
+        const coords = (m.geometry||[]).map(g=>[g.lat,g.lon]);
+        if(m.role==="from") r.from.push({ref:m.ref, coords});
+        else if(m.role==="to") r.to.push({ref:m.ref, coords});
+        else if(m.role==="via") r.viaWays.push({ref:m.ref, coords});
+      }
+    });
+    return r;
+  }
+
+  // Validate each restriction's structure; flag only the broken ones.
+  function checkRestrictions(restrictions){
+    const issues = [];
+    const rl = id => `https://www.openstreetmap.org/relation/${id}`;
+    const rj = id => `https://www.openstreetmap.org/edit?relation=${id}`;
+    restrictions.forEach(r=>{
+      let where = null;
+      if(r.via.length && r.via[0].coord) where = {lat:r.via[0].coord[0], lon:r.via[0].coord[1]};
+      else if(r.from.length && r.from[0].coords.length){ const c=r.from[0].coords[Math.floor(r.from[0].coords.length/2)]; where={lat:c[0], lon:c[1]}; }
+
+      const probs = [];
+      if(!r.restriction) probs.push("no restriction tag");
+      else if(!/^(no_|only_)/.test(r.restriction)) probs.push(`unusual restriction value "${r.restriction}"`);
+      if(!r.from.length) probs.push("missing 'from' member");
+      if(!r.to.length) probs.push("missing 'to' member");
+      if(!r.via.length && !r.viaWays.length) probs.push("missing 'via' member");
+
+      // node-via should be shared by both a from-way and a to-way
+      if(r.via.length && r.via[0].coord && r.from.length && r.to.length){
+        const vk = r.via[0].coord[0].toFixed(6)+","+r.via[0].coord[1].toFixed(6);
+        const touches = arr => arr.some(w => w.coords.some(c => c[0].toFixed(6)+","+c[1].toFixed(6)===vk));
+        if(!touches(r.from)) probs.push("'from' way doesn't meet the via node");
+        if(!touches(r.to)) probs.push("'to' way doesn't meet the via node");
+      }
+
+      if(probs.length){
+        issues.push({sev:"med", check:"Turn restriction",
+          detail:`${r.restriction||"restriction"} (relation ${r.id}): ${probs.join("; ")}.`,
+          where, link: rl(r.id), josm: rj(r.id), wayId: null});
+      }
+    });
+    return issues;
+  }
+
+  function renderRoad(ways, ctx, route, issues, extra){
+    extra = extra || {};
     let totalKm = 0, withSpeed = 0, kmWithSpeed = 0;
     const dist = new Map();   // maxspeed string -> {ways, km}
     for(const w of ways){
@@ -1061,6 +1178,7 @@
       <div class="scorecard">
         <div class="score"><div class="v">${pct}%</div><div class="k">maxspeed coverage</div></div>
         <div class="score"><div class="v">${route.length}</div><div class="k">connected piece${route.length===1?"":"s"}</div></div>
+        <div class="score"><div class="v">${extra.restrictionCount||0}</div><div class="k">turn restrictions</div></div>
         <div class="score"><div class="v"><span class="sev high"></span>${nHigh}</div><div class="k">blocking</div></div>
         <div class="score"><div class="v"><span class="sev med"></span>${nMed}</div><div class="k">guidance</div></div>
         <div class="score"><div class="v"><span class="sev low"></span>${nLow}</div><div class="k">completeness</div></div>
@@ -1110,7 +1228,7 @@
         <button id="rcsv" class="btn ghost">Copy ways CSV</button>
         <button id="rdl" class="btn ghost">Download ways CSV</button>
       </div>
-      <p class="hint">A route should be one connected piece. Checks: <b>connectivity</b> (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), and <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠). Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
+      <p class="hint">A route should be one connected piece. Checks: <b>connectivity</b> (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠), <b>turn restrictions</b> — structurally broken <code>type=restriction</code> relations (🟠), and <b>ref continuity</b> — ref changes or missing refs along the route (🟡). Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
 
     // maxspeed distribution sidebar
     const distRows = [...dist.entries()].sort((a,b)=>b[1].km-a[1].km).map(([k,d])=>`<tr>
