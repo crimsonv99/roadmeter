@@ -118,6 +118,20 @@
   .bar{height:10px; background:#e5e9e7; border-radius:6px; overflow:hidden}
   .bar > span{display:block; height:100%; background:var(--route)}
 
+  /* route QA report card */
+  .scorecard{display:flex; gap:12px; flex-wrap:wrap; margin-top:14px}
+  .score{flex:1; min-width:104px; background:#f6f8f7; border:1px solid var(--hairline); border-radius:8px; padding:11px 13px}
+  .score .v{font-family:'JetBrains Mono',monospace; font-weight:700; font-size:22px; line-height:1}
+  .score .k{font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin-top:5px}
+  .sev{display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:-1px}
+  .sev.high{background:var(--red)} .sev.med{background:var(--amber)} .sev.low{background:#C9A227}
+  .issrow{cursor:pointer}
+  .issrow:hover{background:#f5f7f6}
+  .badge.high{background:#f7dedb; color:#8c2018}
+  .badge.med{background:#fbecd6; color:#8a560f}
+  .badge.low{background:#f5eecb; color:#6f5b06}
+  .allclear{display:flex; align-items:center; gap:8px; color:var(--route-dark); background:#e3f1e9; border:1px solid #bfe0cd; border-radius:8px; padding:10px 12px; font-size:13px; margin-top:14px}
+
   /* changeset inspector (OSMCha-style) */
   .cs.active{background:#eef5f1}
   .cshead .when{font-family:'JetBrains Mono',monospace; color:var(--muted); font-size:12px}
@@ -222,6 +236,7 @@
             <option value="relname">Relation by name</option>
             <option value="relref">Relation by ref</option>
             <option value="relid">Relation by id</option>
+            <option value="ref">Ways by ref (no relation)</option>
           </select>
         </div>
         <div class="field grow">
@@ -764,9 +779,18 @@
   }
 
   // =====================================================================
-  // ROAD MODE
+  // ROAD MODE — route traffic-guidance QA (KR 3)
   // =====================================================================
   $("#rfetch").addEventListener("click", inspectRoad);
+
+  // severity thresholds (PLAN.md §7.5 defaults — tunable here)
+  const SPEED_JUMP = 30;    // km/h Δ between adjacent segments that counts as a jump
+  const SPEED_MAX  = 150;   // km/h above which a value is implausible
+  const ONEWAY_YES = new Set(["yes","true","1"]);
+  const ONEWAY_REV = new Set(["-1","reverse"]);
+  const ONEWAY_OK  = new Set(["yes","true","1","-1","reverse","no","false","0","reversible","alternating"]);
+
+  let roadIssues = [];   // current issue list (for row-click → map)
 
   function setRStatus(msg, isErr){
     const el = $("#rstatus"); el.textContent = msg || "";
@@ -780,6 +804,7 @@
     const highwaysOnly = $("#rhwy").checked;
     if(!q){ setRStatus("Enter a name, ref, or relation id.", true); return; }
     if(by === "relid" && !/^\d+$/.test(q)){ setRStatus("Relation id must be numeric.", true); return; }
+    if(by === "ref" && !cc){ setRStatus("Pick a country for a ways-by-ref search (it scopes the query).", true); return; }
 
     const btn = $("#rfetch"); btn.disabled = true;
     $("#rresultsCard").style.display = "";
@@ -792,15 +817,23 @@
       const json = await overpass(query);
       const ways = [];
       for(const el of (json.elements||[])){
-        if(el.type!=="way"||!el.geometry) continue;
+        if(el.type!=="way"||!el.geometry||el.geometry.length<2) continue;
         const t = el.tags||{};
+        const coords = el.geometry.map(g=>[g.lat,g.lon]);
+        const last = coords.length-1;
+        // endpoint keys for connectivity: node id when available, else rounded coord
+        const useNodes = Array.isArray(el.nodes) && el.nodes.length===coords.length;
+        const keyAt = i => useNodes ? "n"+el.nodes[i] : coords[i][0].toFixed(7)+","+coords[i][1].toFixed(7);
         ways.push({
           id: el.id,
           km: polylineKm(el.geometry),
           maxspeed: parseMaxspeed(t),
+          maxspeedRaw: t.maxspeed || t["maxspeed:forward"] || t["maxspeed:backward"] || "",
           name: t.ref || t.name || "(unnamed)",
           highway: t.highway || "",
-          coords: el.geometry.map(g=>[g.lat,g.lon]),
+          oneway: (t.oneway || (t.junction==="roundabout" ? "yes" : "")).toLowerCase(),
+          coords,
+          endKeys: [keyAt(0), keyAt(last)],
         });
       }
       if(!ways.length){
@@ -808,9 +841,12 @@
         $("#rreadout").innerHTML = `<div class="empty">No ways to inspect.</div>`;
         return;
       }
-      renderRoad(ways, {by, q, cc});
-      drawMap("#rmap", ways.map(w=>w.coords));
-      setRStatus(`Done — ${ways.length} way(s).`);
+      const route = assembleRoute(ways);
+      const issues = runChecks(ways, route);
+      roadIssues = issues;
+      renderRoad(ways, {by, q, cc}, route, issues);
+      drawRoute("#rmap", ways, issues);
+      setRStatus(`Done — ${ways.length} way(s), ${route.length} connected piece(s), ${issues.length} issue(s).`);
     }catch(e){
       console.error(e);
       const m = String(e.message||e);
@@ -825,16 +861,162 @@
       return `[out:json][timeout:90];relation(${Number(q)});way(r)${hwy};out tags geom;`;
     }
     const re = escapeRe(q);
-    const key = by === "relref" ? "ref" : "name";
     let area = "", inArea = "";
     if(cc){
       area = `area["ISO3166-1"="${cc}"][admin_level=2]->.a;`;
       inArea = "(area.a)";
     }
+    if(by === "ref"){   // ways sharing a ref, no relation needed
+      return `[out:json][timeout:90];${area}way${inArea}["ref"~"${re}",i]${hwy};out tags geom;`;
+    }
+    const key = by === "relref" ? "ref" : "name";
     return `[out:json][timeout:90];${area}relation${inArea}["${key}"~"${re}",i];way(r)${hwy};out tags geom;`;
   }
 
-  function renderRoad(ways, ctx){
+  // ---------- ordered route assembly ----------
+  // Greedy walk over shared endpoint nodes → array of segments, each an ordered
+  // list of {wi, forward}. forward = traversed node0→nodeLast (left→right in chain).
+  function assembleRoute(ways){
+    const ep = new Map();   // endpoint key -> [{wi, end}]
+    ways.forEach((w,wi)=>[0,1].forEach(end=>{
+      const k = w.endKeys[end];
+      if(!ep.has(k)) ep.set(k, []);
+      ep.get(k).push({wi, end});
+    }));
+    const used = new Array(ways.length).fill(false);
+
+    function extend(seq, key, dir){
+      while(true){
+        const cands = (ep.get(key)||[]).filter(c=>!used[c.wi]);
+        if(!cands.length) return;
+        const {wi, end} = cands[0];
+        used[wi] = true;
+        const other = end===0 ? 1 : 0;
+        const forward = dir==="fwd" ? (end===0) : (end===1);
+        if(dir==="fwd") seq.push({wi, forward}); else seq.unshift({wi, forward});
+        key = ways[wi].endKeys[other];
+      }
+    }
+
+    // seed order: ways touching a degree-1 endpoint first (true route ends)
+    const deg = k => (ep.get(k)||[]).length;
+    const seeds = ways.map((w,wi)=>wi).sort((a,b)=>{
+      const da = Math.min(deg(ways[a].endKeys[0]), deg(ways[a].endKeys[1]));
+      const db = Math.min(deg(ways[b].endKeys[0]), deg(ways[b].endKeys[1]));
+      return da - db;
+    });
+
+    const segments = [];
+    for(const wi of seeds){
+      if(used[wi]) continue;
+      used[wi] = true;
+      const seq = [{wi, forward:true}];
+      extend(seq, ways[wi].endKeys[1], "fwd");
+      extend(seq, ways[wi].endKeys[0], "back");
+      segments.push(seq);
+    }
+    return segments;
+  }
+
+  // left/right end coords of a chain item, in chain direction
+  function leftCoord(ways, it){ const w=ways[it.wi]; return it.forward ? w.coords[0] : w.coords[w.coords.length-1]; }
+  function rightCoord(ways, it){ const w=ways[it.wi]; return it.forward ? w.coords[w.coords.length-1] : w.coords[0]; }
+
+  // ---------- the checks ----------
+  function runChecks(ways, route){
+    const issues = [];
+    const link = w => `https://www.openstreetmap.org/way/${w.id}`;
+    const josm = w => `https://www.openstreetmap.org/edit?way=${w.id}`;
+    const at = c => c ? {lat:c[0], lon:c[1]} : null;
+
+    // C1 — connectivity / continuity
+    if(route.length > 1){
+      route.forEach((seg,i)=>{
+        if(i===0) return;   // first piece is the "spine"
+        const head = seg[0], coord = leftCoord(ways, head);
+        const w = ways[head.wi];
+        issues.push({sev:"high", check:"Connectivity",
+          detail:`Disconnected piece ${i+1} of ${route.length} — this segment's end doesn't meet the rest of the route (starts at ${ways[head.wi].name}).`,
+          where: at(coord), link: link(w), josm: josm(w), wayId: w.id});
+      });
+    }
+
+    // C2 — oneway consistency (per connected piece)
+    route.forEach(seg=>{
+      let withCount=0, againstCount=0;
+      const oneways = [];
+      seg.forEach(it=>{
+        const w = ways[it.wi];
+        if(!w.oneway || w.oneway==="no" || w.oneway==="false" || w.oneway==="0") return;
+        if(!ONEWAY_OK.has(w.oneway)){
+          issues.push({sev:"med", check:"Oneway",
+            detail:`Invalid oneway value "${w.oneway}" on ${w.name}.`,
+            where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
+          return;
+        }
+        if(ONEWAY_YES.has(w.oneway) || ONEWAY_REV.has(w.oneway)){
+          const dir = ONEWAY_YES.has(w.oneway) ? 1 : -1;          // tagged allowed direction
+          const withFlow = it.forward ? (dir===1) : (dir===-1);  // matches chain traversal?
+          withFlow ? withCount++ : againstCount++;
+          oneways.push({it, w, withFlow});
+        }
+      });
+      // minority direction in a clearly-directed chain → likely a reversed oneway
+      const total = withCount + againstCount;
+      if(total >= 4){
+        const flagWith = withCount < againstCount;   // flag the smaller (minority) group
+        const minCount = Math.min(withCount, againstCount);
+        if(minCount > 0 && minCount/total <= 0.34){
+          oneways.filter(o=>o.withFlow===flagWith).forEach(o=>{
+            issues.push({sev:"med", check:"Oneway",
+              detail:`Oneway runs against the route's dominant direction here (${o.w.oneway}) — possible reversed oneway, or an opposing divided-carriageway side.`,
+              where: at(midCoord(o.w)), link: link(o.w), josm: josm(o.w), wayId: o.w.id});
+          });
+        }
+      }
+    });
+
+    // C3 — maxspeed sanity
+    let missingCount=0, missingKm=0, firstMissing=null;
+    ways.forEach(w=>{
+      if(!w.highway && $("#rhwy").checked) return;
+      if(w.maxspeed == null){
+        missingCount++; missingKm += w.km; if(!firstMissing) firstMissing = w;
+      }else if(typeof w.maxspeed === "number" && (w.maxspeed <= 0 || w.maxspeed > SPEED_MAX)){
+        issues.push({sev:"med", check:"Maxspeed",
+          detail:`Implausible maxspeed ${w.maxspeedRaw||w.maxspeed} on ${w.name}.`,
+          where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
+      }
+    });
+    if(missingCount){
+      issues.push({sev:"low", check:"Maxspeed",
+        detail:`${missingCount} way(s) (${missingKm.toFixed(1)} km) have no maxspeed tag.`,
+        where: at(midCoord(firstMissing)), link: link(firstMissing), josm: josm(firstMissing), wayId: firstMissing.id});
+    }
+    // jumps between adjacent (connected) ways
+    route.forEach(seg=>{
+      for(let i=0;i<seg.length-1;i++){
+        const a = ways[seg[i].wi], b = ways[seg[i+1].wi];
+        if(typeof a.maxspeed==="number" && typeof b.maxspeed==="number"){
+          const d = Math.abs(a.maxspeed-b.maxspeed);
+          if(d >= SPEED_JUMP){
+            const coord = rightCoord(ways, seg[i]);
+            issues.push({sev:"med", check:"Maxspeed",
+              detail:`Speed jump ${a.maxspeed}→${b.maxspeed} km/h (Δ${d}) between ${a.name} and ${b.name}.`,
+              where: at(coord), link: link(b), josm: josm(b), wayId: b.id});
+          }
+        }
+      }
+    });
+
+    const rank = {high:0, med:1, low:2};
+    issues.sort((x,y)=>rank[x.sev]-rank[y.sev]);
+    return issues;
+  }
+
+  function midCoord(w){ return w && w.coords.length ? w.coords[Math.floor(w.coords.length/2)] : null; }
+
+  function renderRoad(ways, ctx, route, issues){
     let totalKm = 0, withSpeed = 0, kmWithSpeed = 0;
     const dist = new Map();   // maxspeed string -> {ways, km}
     for(const w of ways){
@@ -847,8 +1029,10 @@
       }
     }
     const pct = totalKm ? Math.round(100*kmWithSpeed/totalKm) : 0;
+    const nHigh = issues.filter(i=>i.sev==="high").length;
+    const nMed  = issues.filter(i=>i.sev==="med").length;
+    const nLow  = issues.filter(i=>i.sev==="low").length;
 
-    // big km post
     const post = `
       <div class="post">
         <div class="cap"></div>
@@ -860,7 +1044,34 @@
         <div class="stem"></div>
       </div>`;
 
-    // per-way table (sorted by km desc)
+    const scorecard = `
+      <div class="scorecard">
+        <div class="score"><div class="v">${pct}%</div><div class="k">maxspeed coverage</div></div>
+        <div class="score"><div class="v">${route.length}</div><div class="k">connected piece${route.length===1?"":"s"}</div></div>
+        <div class="score"><div class="v"><span class="sev high"></span>${nHigh}</div><div class="k">blocking</div></div>
+        <div class="score"><div class="v"><span class="sev med"></span>${nMed}</div><div class="k">guidance</div></div>
+        <div class="score"><div class="v"><span class="sev low"></span>${nLow}</div><div class="k">completeness</div></div>
+      </div>`;
+
+    const issuesBlock = issues.length ? `
+      <div class="eyebrow" style="margin-top:18px">Issues — most severe first</div>
+      <div class="scrolltable" style="max-height:280px">
+      <table>
+        <thead><tr><th>Sev</th><th>Check</th><th>Detail</th><th>Fix</th></tr></thead>
+        <tbody>${issues.map((is,idx)=>`<tr class="issrow" data-iss="${idx}">
+          <td><span class="badge ${is.sev}">${is.sev==="high"?"🔴":is.sev==="med"?"🟠":"🟡"}</span></td>
+          <td>${esc(is.check)}</td>
+          <td>${esc(is.detail)}</td>
+          <td><a href="${is.josm}" target="_blank" rel="noopener" title="open in iD editor">iD ↗</a></td>
+        </tr>`).join("")}</tbody>
+      </table>
+      </div>
+      <div class="row-actions">
+        <button id="risscsv" class="btn ghost">Copy issues CSV</button>
+        <button id="rissdl" class="btn ghost">Download issues CSV</button>
+      </div>`
+      : `<div class="allclear">✓ No connectivity, oneway, or maxspeed issues detected on this route.</div>`;
+
     const sorted = [...ways].sort((a,b)=>b.km-a.km);
     const wayRows = sorted.map(w=>`<tr>
         <td><a href="https://www.openstreetmap.org/way/${w.id}" target="_blank" rel="noopener">${esc(w.name)}</a></td>
@@ -868,11 +1079,14 @@
         <td class="num">${w.maxspeed==null?'—':esc(String(w.maxspeed))}</td>
       </tr>`).join("");
 
-    $("#rreadout").innerHTML = post + `
+    $("#rreadout").innerHTML = post + scorecard + `
       <div class="cover">
         <div class="lbl2"><span>maxspeed coverage (by length)</span><span>${pct}%</span></div>
         <div class="bar"><span style="width:${pct}%"></span></div>
       </div>
+      ${issuesBlock}
+      <div id="rmap"></div>
+      <div class="eyebrow" style="margin-top:18px">All ways</div>
       <div class="scrolltable">
       <table>
         <thead><tr><th>Way (ref/name)</th><th class="num">km</th><th class="num">maxspeed</th></tr></thead>
@@ -880,13 +1094,12 @@
       </table>
       </div>
       <div class="row-actions">
-        <button id="rcsv" class="btn ghost">Copy CSV</button>
-        <button id="rdl" class="btn ghost">Download CSV</button>
+        <button id="rcsv" class="btn ghost">Copy ways CSV</button>
+        <button id="rdl" class="btn ghost">Download ways CSV</button>
       </div>
-      <div id="rmap"></div>
-      <p class="hint">Lengths use current OSM geometry summed per way. Coverage is the share of total length on ways that carry a <code>maxspeed</code> tag.</p>`;
+      <p class="hint">A route should be one connected piece. Checks: <b>connectivity</b> (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), and <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠). Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
 
-    // sidebar: maxspeed distribution
+    // maxspeed distribution sidebar
     const distRows = [...dist.entries()].sort((a,b)=>b[1].km-a[1].km).map(([k,d])=>`<tr>
         <td>${esc(k)}</td><td class="num">${d.ways}</td><td class="num">${d.km.toFixed(2)}</td>
       </tr>`).join("");
@@ -894,7 +1107,6 @@
     const noneRow = noSpeedWays ? `<tr>
         <td style="color:var(--muted)">— (none)</td><td class="num">${noSpeedWays}</td><td class="num">${noSpeedKm.toFixed(2)}</td>
       </tr>` : "";
-
     $("#rsidebar").innerHTML = `
       <div class="eyebrow">maxspeed distribution</div>
       <div class="scrolltable">
@@ -904,13 +1116,28 @@
       </table>
       </div>`;
 
+    // wire up
+    $("#rreadout").querySelectorAll(".issrow").forEach(tr=>tr.addEventListener("click", e=>{
+      if(e.target.closest("a")) return;   // let the iD link work
+      zoomIssue(roadIssues[Number(tr.dataset.iss)]);
+    }));
     $("#rcsv").onclick = e => copyCsv(roadCsv(sorted), e.target);
     $("#rdl").onclick = () => downloadCsv(roadCsv(sorted), "roadmeter-road.csv");
+    if(issues.length){
+      $("#risscsv").onclick = e => copyCsv(issuesCsv(issues), e.target);
+      $("#rissdl").onclick = () => downloadCsv(issuesCsv(issues), "roadmeter-issues.csv");
+    }
   }
 
   function roadCsv(ways){
-    const lines=["way_id,name_or_ref,km,maxspeed,highway"];
-    ways.forEach(w=>lines.push([w.id, csvCell(w.name), w.km.toFixed(3), w.maxspeed==null?"":csvCell(String(w.maxspeed)), csvCell(w.highway)].join(",")));
+    const lines=["way_id,name_or_ref,km,maxspeed,oneway,highway"];
+    ways.forEach(w=>lines.push([w.id, csvCell(w.name), w.km.toFixed(3), w.maxspeed==null?"":csvCell(String(w.maxspeed)), csvCell(w.oneway), csvCell(w.highway)].join(",")));
+    return lines.join("\n");
+  }
+  function issuesCsv(issues){
+    const lines=["severity,check,detail,lat,lon,way_id,osm_url"];
+    issues.forEach(i=>lines.push([i.sev, i.check, csvCell(i.detail),
+      i.where?i.where.lat:"", i.where?i.where.lon:"", i.wayId||"", i.link||""].join(",")));
     return lines.join("\n");
   }
 
@@ -1012,6 +1239,35 @@
     else if(meta && meta.min_lat!=null) map.fitBounds([[meta.min_lat,meta.min_lon],[meta.max_lat,meta.max_lon]],{padding:[25,25]});
     else map.setView([0,0],2);
     setTimeout(()=>map.invalidateSize(),50);
+  }
+
+  // Route QA map: the road in green + issue markers coloured by severity.
+  function drawRoute(sel, ways, issues){
+    const map = ensureMap(sel); if(!map) return;
+    const bounds=[];
+    ways.forEach(w=>{
+      if(!w.coords || w.coords.length<2) return;
+      L.polyline(w.coords,{color:"#1C7A4B",weight:3,opacity:.65}).addTo(layers[sel]);
+      w.coords.forEach(c=>bounds.push(c));
+    });
+    const COL={high:"#C0392B", med:"#D9881F", low:"#C9A227"};
+    issues.forEach(is=>{
+      if(!is.where) return;
+      const col=COL[is.sev]||"#C0392B";
+      const mk=L.circleMarker([is.where.lat,is.where.lon],{
+        radius:6, color:col, weight:2, fillColor:col, fillOpacity:.9
+      }).addTo(layers[sel]);
+      mk.bindPopup(`<b>${esc(is.check)}</b><br>${esc(is.detail)}`);
+      is._marker = mk;
+    });
+    if(bounds.length) map.fitBounds(bounds,{padding:[20,20]});
+    setTimeout(()=>map.invalidateSize(),50);
+  }
+  function zoomIssue(is){
+    const map = maps["#rmap"]; if(!map || !is || !is.where) return;
+    map.setView([is.where.lat, is.where.lon], 16);
+    if(is._marker) is._marker.openPopup();
+    map.invalidateSize();
   }
 
   function copyCsv(text, btn){
