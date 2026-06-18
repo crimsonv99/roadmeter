@@ -264,7 +264,11 @@
         <button id="rfetch" class="btn">Inspect road</button>
       </div>
       <label class="check"><input id="rhwy" type="checkbox" checked> Highways only (ways tagged <code>highway=*</code>)</label>
-      <div class="hint" style="margin-top:8px">Separate variants with <code>;</code> to match any of them — handy when OSM tags the same road inconsistently (e.g. <code>QL1; Quốc lộ 1; QL.1</code>). Matching is case-insensitive and partial.</div>
+      <div class="hint" style="margin-top:8px">
+        <b>One value:</b> type the name or ref — e.g. <code>Quốc lộ 51</code>.<br>
+        <b>Multiple values:</b> separate variants with <code>;</code> to match any — e.g. <code>QL1; Quốc lộ 1; QL.1</code> (useful when OSM tags the same road inconsistently).<br>
+        Matching is case-insensitive and partial.
+      </div>
       <div id="rstatus" class="status"></div>
     </section>
 
