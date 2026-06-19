@@ -848,6 +848,7 @@
           roadName: t.name || "",
           highway: t.highway || "",
           oneway: (t.oneway || (t.junction==="roundabout" ? "yes" : "")).toLowerCase(),
+          tags: t,
           coords,
           nodeKeys,
           endKeys: [nodeKeys[0], nodeKeys[last]],
@@ -1109,6 +1110,39 @@
       }
     }
 
+    // C6 — lanes / turn:lanes
+    ways.forEach(w=>{
+      const t = w.tags || {};
+      const lanes = t.lanes!=null ? Number(t.lanes) : null;
+      if(t.lanes!=null && (!Number.isInteger(lanes) || lanes<=0 || lanes>12)){
+        issues.push({sev:"low", check:"Lanes",
+          detail:`Unusual lanes value "${t.lanes}" on ${w.name}.`,
+          where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
+      }
+      const tl = t["turn:lanes"];
+      if(tl && lanes!=null && Number.isInteger(lanes) && (ONEWAY_YES.has(w.oneway) || ONEWAY_REV.has(w.oneway))){
+        const count = tl.split("|").length;
+        if(count !== lanes){
+          issues.push({sev:"low", check:"Lanes",
+            detail:`turn:lanes lists ${count} lane(s) but lanes=${t.lanes} on ${w.name}.`,
+            where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
+        }
+      }
+    });
+
+    // C7 — access / barrier anomalies (way-level access tags)
+    ways.forEach(w=>{
+      const t = w.tags || {};
+      const key = t.access!=null ? "access" : (t.motor_vehicle!=null ? "motor_vehicle" : (t.vehicle!=null ? "vehicle" : null));
+      if(!key) return;
+      const v = t[key];
+      if(v==="no" || v==="private"){
+        issues.push({sev:"low", check:"Access",
+          detail:`${key}=${v} on ${w.name} — vehicles may be barred from routing through here.`,
+          where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
+      }
+    });
+
     sortIssues(issues);
     return issues;
   }
@@ -1230,7 +1264,16 @@
       </div>`;
 
     const issuesBlock = issues.length ? `
-      <div class="eyebrow" style="margin-top:18px">Issues — most severe first</div>
+      <div class="list-head" style="margin-top:18px">
+        <div class="eyebrow">Issues — most severe first</div>
+        <label class="selall">show
+          <select id="rissfilter">
+            <option value="all">all</option>
+            <option value="med">🔴 + 🟠 only</option>
+            <option value="high">🔴 only</option>
+          </select>
+        </label>
+      </div>
       <div class="scrolltable" style="max-height:280px">
       <table>
         <thead><tr><th>Sev</th><th>Check</th><th>Detail</th><th>Fix</th></tr></thead>
@@ -1273,7 +1316,7 @@
         <button id="rcsv" class="btn ghost">Copy ways CSV</button>
         <button id="rdl" class="btn ghost">Download ways CSV</button>
       </div>
-      <p class="hint">A route should be one connected component. Checks: <b>connectivity</b> — "routing islands" not joined to the main route by any shared node (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠), <b>turn restrictions</b> — structurally broken <code>type=restriction</code> relations (🟠), and <b>ref continuity</b> — ref changes or missing refs along the route (🟡). Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
+      <p class="hint">A route should be one connected component. Checks: <b>connectivity</b> — "routing islands" not joined to the main route by any shared node (🔴 breaks routing), <b>oneway</b> direction consistency (🟠), <b>maxspeed</b> sanity — missing (🟡), implausible (>${SPEED_MAX}), or jumps ≥${SPEED_JUMP} km/h (🟠), <b>turn restrictions</b> — structurally broken <code>type=restriction</code> relations (🟠), <b>ref continuity</b> — ref changes or missing refs (🟡), <b>lanes</b> — odd <code>lanes</code> values or <code>turn:lanes</code> count mismatches (🟡), and <b>access</b> — <code>access/vehicle=no/private</code> mid-route (🟡). Use the filter to focus on 🔴/🟠. Click an issue row to zoom the map. Flags only — fix in iD/JOSM.</p>`;
 
     // maxspeed distribution sidebar
     const distRows = [...dist.entries()].sort((a,b)=>b[1].km-a[1].km).map(([k,d])=>`<tr>
@@ -1302,6 +1345,15 @@
     if(issues.length){
       $("#risscsv").onclick = e => copyCsv(issuesCsv(issues), e.target);
       $("#rissdl").onclick = () => downloadCsv(issuesCsv(issues), "roadmeter-issues.csv");
+      const ff = $("#rissfilter");
+      if(ff) ff.onchange = () => {
+        const v = ff.value;
+        $("#rreadout").querySelectorAll(".issrow").forEach(tr=>{
+          const sev = roadIssues[Number(tr.dataset.iss)].sev;
+          const show = v==="all" || (v==="med" && sev!=="low") || (v==="high" && sev==="high");
+          tr.style.display = show ? "" : "none";
+        });
+      };
     }
   }
 
