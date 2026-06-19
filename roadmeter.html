@@ -799,6 +799,8 @@
   // severity thresholds (PLAN.md §7.5 defaults — tunable here)
   const SPEED_JUMP = 30;    // km/h Δ between adjacent segments that counts as a jump
   const SPEED_MAX  = 150;   // km/h above which a value is implausible
+  const GAP_MERGE_M = 250;  // components whose endpoints are within this are treated as
+                            // connected (a missing/un-reffed connector bridges them)
   const ONEWAY_YES = new Set(["yes","true","1"]);
   const ONEWAY_REV = new Set(["-1","reverse"]);
   const ONEWAY_OK  = new Set(["yes","true","1","-1","reverse","no","false","0","reversible","alternating"]);
@@ -860,7 +862,8 @@
         return;
       }
       const route = assembleRoute(ways);
-      const comps = connectedComponents(ways);   // real connectivity (routing islands)
+      let comps = connectedComponents(ways);   // real connectivity (routing islands)
+      comps = coalesceComponents(ways, comps, GAP_MERGE_M);   // bridge tiny gaps (missing connectors)
       let issues = runChecks(ways, route, comps);
 
       // C4 — turn restrictions (needs a second Overpass query; non-fatal if it fails)
@@ -989,6 +992,42 @@
     return arr;
   }
 
+  // Merge components whose endpoints are within maxGapM of each other — in
+  // "ways by ref" mode the connecting/intersection ways often lack the ref and
+  // are excluded, leaving artificial sub-metre-to-~hundred-metre gaps. Uses a
+  // grid hash over endpoints so it stays near-linear. Genuinely far-apart
+  // components (real routing islands) survive.
+  function coalesceComponents(ways, comps, maxGapM){
+    if(comps.length < 2) return comps;
+    const compOf = new Map();
+    comps.forEach((c,ci)=>c.forEach(wi=>compOf.set(wi, ci)));
+    const parent = comps.map((_,i)=>i);
+    const find = x => { while(parent[x]!==x){ parent[x]=parent[parent[x]]; x=parent[x]; } return x; };
+    const union = (a,b) => { const ra=find(a), rb=find(b); if(ra!==rb) parent[ra]=rb; };
+    const cell = maxGapM / 111320;   // ~degrees per metre (lat); fine at VN latitudes
+    const eps = [];
+    ways.forEach((w,wi)=>{ const ci=compOf.get(wi); [w.coords[0], w.coords[w.coords.length-1]].forEach(p=>eps.push({p, ci})); });
+    const grid = new Map();
+    eps.forEach((e,idx)=>{ const k=Math.round(e.p[0]/cell)+":"+Math.round(e.p[1]/cell); (grid.get(k)||grid.set(k,[]).get(k)).push(idx); });
+    for(const e of eps){
+      const gi=Math.round(e.p[0]/cell), gj=Math.round(e.p[1]/cell);
+      for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++){
+        const arr=grid.get((gi+di)+":"+(gj+dj)); if(!arr) continue;
+        for(const oidx of arr){
+          const o=eps[oidx];
+          if(o.ci===e.ci) continue;
+          if(haversine(e.p[0],e.p[1],o.p[0],o.p[1]) <= maxGapM) union(e.ci, o.ci);
+        }
+      }
+    }
+    const merged = new Map();
+    comps.forEach((c,ci)=>{ const r=find(ci); if(!merged.has(r)) merged.set(r,[]); merged.get(r).push(...c); });
+    const out = [...merged.values()];
+    const kmOf = comp => comp.reduce((s,i)=>s+ways[i].km, 0);
+    out.sort((a,b)=> kmOf(b)-kmOf(a));
+    return out;
+  }
+
   // ---------- the checks ----------
   function runChecks(ways, route, comps){
     const issues = [];
@@ -1005,7 +1044,7 @@
         const w = ways[comp[0]];
         const kmSum = comp.reduce((s,i)=>s+ways[i].km, 0);
         issues.push({sev:"high", check:"Connectivity",
-          detail:`Routing island — ${comp.length} way(s), ${kmSum.toFixed(2)} km, not connected to the main route (e.g. ${w.name}). Routing can't cross into this segment.`,
+          detail:`Routing island — ${comp.length} way(s), ${kmSum.toFixed(2)} km, not connected to the main route (e.g. ${w.name}); no shared node and nothing within ${GAP_MERGE_M} m. Routing can't cross into this segment.`,
           where: at(midCoord(w)), link: link(w), josm: josm(w), wayId: w.id});
       });
       if(islands.length > MAX_ISLANDS){
