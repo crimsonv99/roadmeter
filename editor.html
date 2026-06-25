@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>RouteSense Editor — private bulk tag editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#EEF1EF; --panel:#FFFFFF; --ink:#161A18; --muted:#5C6661;
+    --hairline:#D9DEDC; --route:#1C7A4B; --route-dark:#135734;
+    --amber:#D9881F; --red:#C0392B; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--paper); color:var(--ink); font-family:Inter,system-ui,sans-serif; font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:900px; margin:0 auto; padding:28px 20px 60px}
+  a{color:var(--route)}
+  header.top{display:flex; align-items:center; gap:14px; margin-bottom:22px}
+  .post-ico{width:30px; height:38px; flex:none}
+  h1{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:24px; letter-spacing:-.02em; margin:0; line-height:1}
+  .tag{color:var(--muted); font-size:13px; margin-top:5px}
+  .card{background:var(--panel); border:1px solid var(--hairline); border-radius:var(--radius); padding:18px}
+  .card + .card{margin-top:18px}
+  .eyebrow{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted)}
+  .form-row{display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-top:12px}
+  .field{display:flex; flex-direction:column; gap:5px}
+  .field.grow{flex:1; min-width:220px}
+  label.lbl{font-size:12px; font-weight:600; color:var(--muted)}
+  input[type=text],input[type=file]{font:inherit; padding:9px 11px; border:1px solid var(--hairline); border-radius:8px; background:#fff; color:var(--ink)}
+  input[type=text]{font-family:'JetBrains Mono',monospace}
+  input:focus,textarea:focus{outline:2px solid var(--route); outline-offset:1px; border-color:var(--route)}
+  textarea{font-family:'JetBrains Mono',monospace; font-size:13px; padding:10px 11px; border:1px solid var(--hairline); border-radius:8px; background:#fff; color:var(--ink); width:100%; resize:vertical; margin-top:12px}
+  .sbx{display:inline-block; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px; background:#fbecd6; color:#8a560f; letter-spacing:.06em; vertical-align:1px}
+  .btn{font:inherit; font-weight:600; cursor:pointer; border:none; border-radius:8px; padding:10px 18px; background:var(--route); color:#fff}
+  .btn:hover{background:var(--route-dark)}
+  .btn.ghost{background:#fff; color:var(--ink); border:1px solid var(--hairline)}
+  .btn.ghost:hover{background:#f3f5f4}
+  .btn:disabled{opacity:.5; cursor:default}
+  .status{font-size:13px; color:var(--muted); min-height:18px; margin-top:12px}
+  .status.err{color:var(--red)}
+  .hint{color:var(--muted); font-size:12px; margin-top:10px}
+  .empty{color:var(--muted); text-align:center; padding:30px 10px}
+  .row-actions{display:flex; gap:10px; margin-top:12px; flex-wrap:wrap}
+  table{width:100%; border-collapse:collapse; font-size:13px; margin-top:14px}
+  th,td{text-align:left; padding:7px 6px; border-bottom:1px solid var(--hairline)}
+  th{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600}
+  .scrolltable{max-height:340px; overflow:auto}
+  .scorecard{display:flex; gap:12px; flex-wrap:wrap; margin-top:14px}
+  .score{flex:1; min-width:104px; background:#f6f8f7; border:1px solid var(--hairline); border-radius:8px; padding:11px 13px}
+  .score .v{font-family:'JetBrains Mono',monospace; font-weight:700; font-size:22px; line-height:1}
+  .score .k{font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin-top:5px}
+  .tagdiff{font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.5}
+  .diff-add{color:var(--route)} .diff-del{color:var(--red)} .diff-chg{color:var(--amber)}
+  .locked{display:flex; align-items:center; gap:8px; color:#8c2018; background:#f7dedb; border:1px solid #f0c4bf; border-radius:8px; padding:10px 12px; font-size:13px; margin-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <svg class="post-ico" viewBox="0 0 30 38" aria-hidden="true">
+      <rect x="3" y="2" width="24" height="9" rx="4.5" fill="#C0392B"/>
+      <rect x="3" y="11" width="24" height="16" rx="2" fill="#fff" stroke="#D9DEDC"/>
+      <text x="15" y="23" font-family="JetBrains Mono, monospace" font-size="8" font-weight="700" text-anchor="middle" fill="#161A18">KM</text>
+      <rect x="12.5" y="27" width="5" height="9" fill="#eceeed" stroke="#D9DEDC"/>
+    </svg>
+    <div>
+      <h1>RouteSense Editor <span class="sbx">PRIVATE</span></h1>
+      <div class="tag">Bulk OSM tag editor — CSV in, changeset out. Locked to a single OSM account.</div>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="eyebrow">Connect <span class="sbx">SANDBOX</span></div>
+    <p class="hint" style="margin-top:8px">
+      Writes go to the OSM <b>sandbox</b> (<code>master.apis.dev.openstreetmap.org</code>) — a separate, throwaway database that does <b>not</b> touch the real map. Production way IDs don't exist on the sandbox, so test the login/changeset/write flow with a way you create there. Going live is a one-line change (the <code>EDIT</code> constant) once you're confident.
+    </p>
+    <div class="form-row">
+      <div class="field grow">
+        <label class="lbl" for="oauthcid">OSM OAuth 2.0 client ID (sandbox app)</label>
+        <input id="oauthcid" type="text" placeholder="paste your client_id" autocomplete="off">
+      </div>
+      <button id="oauthlogin" class="btn">Connect to OSM</button>
+    </div>
+    <div id="oauthstatus" class="status"></div>
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">CSV — way_id + tag columns</div>
+    <p class="hint" style="margin-top:8px">First column <code>way_id</code>; every other column header is a tag key (e.g. <code>maxspeed:motorcycle</code>) and the cell is the value to set on that way. Empty cells are skipped. Existing tags and nodes are preserved.</p>
+    <div class="form-row">
+      <input id="csvfile" type="file" accept=".csv,text/csv">
+    </div>
+    <textarea id="csvtext" rows="6" placeholder="way_id,maxspeed:motorcycle&#10;316669007,70&#10;266287159,70"></textarea>
+    <div class="form-row">
+      <div class="field grow">
+        <label class="lbl" for="csmsg">Changeset comment</label>
+        <input id="csmsg" type="text" placeholder="e.g. Add maxspeed:motorcycle from survey data">
+      </div>
+      <button id="editpreview" class="btn ghost">Preview changes</button>
+    </div>
+    <div id="editstatus" class="status"></div>
+  </section>
+
+  <section id="editPreviewCard" class="card" style="display:none">
+    <div id="editreadout"></div>
+  </section>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ============================================================
+  // ACCESS LOCK — only this OSM account may apply edits.
+  // Set this to your exact OSM display name (case-insensitive).
+  // While it is the placeholder, applying is blocked.
+  // ============================================================
+  const OWNER = "__SET_YOUR_OSM_USERNAME__";
+
+  // Target server. SANDBOX is throwaway; to go live, swap to:
+  //   { label:"LIVE OSM", web:"https://www.openstreetmap.org", api:"https://api.openstreetmap.org/api/0.6" }
+  const EDIT = {
+    label: "sandbox",
+    web:   "https://master.apis.dev.openstreetmap.org",
+    api:   "https://master.apis.dev.openstreetmap.org/api/0.6",
+  };
+  const OAUTH_SCOPE = "read_prefs write_api";
+  const REDIRECT = location.origin + location.pathname;
+
+  const $ = s => document.querySelector(s);
+  function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+  let editToken = sessionStorage.getItem("rse_token") || null;
+  let editUser = null;
+  let editResults = null;
+
+  $("#oauthlogin").addEventListener("click", osmLogin);
+  $("#editpreview").addEventListener("click", editPreview);
+  $("#csvfile").addEventListener("change", e=>{
+    const f = e.target.files[0]; if(!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { $("#csvtext").value = rd.result; };
+    rd.readAsText(f);
+  });
+
+  function setEditStatus(msg, isErr){ const el=$("#editstatus"); el.textContent=msg||""; el.classList.toggle("err", !!isErr); }
+
+  // ---- access lock ----
+  function ownerSet(){ return OWNER && OWNER !== "__SET_YOUR_OSM_USERNAME__"; }
+  function isOwner(){ return editUser && ownerSet() && editUser.toLowerCase() === OWNER.toLowerCase(); }
+  function lockMsg(){
+    if(!editUser) return "Connect your OSM account to use this tool.";
+    if(!ownerSet()) return `Access lock not configured — set OWNER in the page source to "${esc(editUser)}" to enable editing.`;
+    if(!isOwner()) return `This editor is locked to a single account. Signed in as ${esc(editUser)}, which is not authorised.`;
+    return "";
+  }
+
+  // ---- PKCE helpers ----
+  function b64url(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+  function sha256(str){ return crypto.subtle.digest("SHA-256", new TextEncoder().encode(str)); }
+  function randStr(n){ const a=new Uint8Array(n); crypto.getRandomValues(a); return b64url(a.buffer); }
+
+  async function osmLogin(){
+    const cid = $("#oauthcid").value.trim();
+    if(!cid){ setEditStatus("Paste your OAuth client ID first.", true); return; }
+    localStorage.setItem("rse_cid", cid);
+    const verifier = randStr(48), state = randStr(12);
+    const challenge = b64url(await sha256(verifier));
+    sessionStorage.setItem("rse_verifier", verifier);
+    sessionStorage.setItem("rse_state", state);
+    sessionStorage.setItem("rse_cid", cid);
+    location.href = `${EDIT.web}/oauth2/authorize?response_type=code`
+      + `&client_id=${encodeURIComponent(cid)}`
+      + `&redirect_uri=${encodeURIComponent(REDIRECT)}`
+      + `&scope=${encodeURIComponent(OAUTH_SCOPE)}`
+      + `&state=${state}&code_challenge=${challenge}&code_challenge_method=S256`;
+  }
+
+  async function handleOAuthRedirect(){
+    const p = new URLSearchParams(location.search);
+    const code = p.get("code"); if(!code) return false;
+    if(p.get("state") !== sessionStorage.getItem("rse_state")){ setEditStatus("OAuth state mismatch — please reconnect.", true); history.replaceState({},"",REDIRECT); return true; }
+    try{
+      const body = new URLSearchParams({grant_type:"authorization_code", code, redirect_uri:REDIRECT,
+        client_id: sessionStorage.getItem("rse_cid"), code_verifier: sessionStorage.getItem("rse_verifier")});
+      const res = await fetch(`${EDIT.web}/oauth2/token`, {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body});
+      if(!res.ok) throw new Error("token HTTP "+res.status);
+      editToken = (await res.json()).access_token;
+      sessionStorage.setItem("rse_token", editToken);
+    }catch(e){ setEditStatus("Login failed: "+(e.message||e)+" (check the client ID and that the redirect URI matches exactly).", true); }
+    history.replaceState({}, "", REDIRECT);
+    await refreshOsmUser();
+    return true;
+  }
+
+  async function refreshOsmUser(){
+    if(!editToken){ renderAuthState(); return; }
+    try{
+      const res = await fetch(`${EDIT.api}/user/details.json`, {headers:{Authorization:"Bearer "+editToken}});
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const j = await res.json();
+      editUser = (j.user && j.user.display_name) || "(unknown)";
+    }catch(e){ editToken=null; editUser=null; sessionStorage.removeItem("rse_token"); }
+    renderAuthState();
+  }
+
+  function renderAuthState(){
+    const el = $("#oauthstatus");
+    if(editToken && editUser){
+      let html = `Connected to <b>${EDIT.label}</b> as <b>${esc(editUser)}</b>. <a href="#" id="oauthlogout">disconnect</a>`;
+      if(!isOwner()) html += `<div class="locked">🔒 ${esc(lockMsg())}</div>`;
+      el.innerHTML = html;
+      const lo=$("#oauthlogout"); if(lo) lo.onclick=e=>{ e.preventDefault(); editToken=null; editUser=null; sessionStorage.removeItem("rse_token"); renderAuthState(); };
+    }else{
+      el.textContent = "Not connected.";
+    }
+  }
+
+  // ---- CSV ----
+  function parseEditCsv(text){
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    if(lines.length < 2) throw new Error("CSV needs a header row and at least one data row.");
+    const header = lines[0].split(",").map(h=>h.trim());
+    let idCol = header.findIndex(h=>/^way_?id$/i.test(h));
+    if(idCol < 0) idCol = 0;
+    const keys = header.map((h,i)=>({h,i})).filter(o=>o.i!==idCol && o.h);
+    if(!keys.length) throw new Error("No tag columns found beside way_id.");
+    const rows = [];
+    for(let r=1;r<lines.length;r++){
+      const cells = lines[r].split(",");
+      const id = Number((cells[idCol]||"").trim());
+      if(!id) continue;
+      const tags = {};
+      keys.forEach(k=>{ const v=(cells[k.i]||"").trim(); if(v!=="") tags[k.h]=v; });
+      if(Object.keys(tags).length) rows.push({id, tags});
+    }
+    if(!rows.length) throw new Error("No valid rows (need a numeric way_id and at least one tag value).");
+    return {keys: keys.map(k=>k.h), rows};
+  }
+
+  async function editPreview(){
+    let csv;
+    try{ csv = parseEditCsv($("#csvtext").value); }catch(e){ setEditStatus(e.message, true); return; }
+    setEditStatus(`Parsed ${csv.rows.length} way(s); tags: ${csv.keys.join(", ")}. Reading current values from ${EDIT.label}…`);
+    $("#editPreviewCard").style.display = "";
+    $("#editreadout").innerHTML = `<div class="empty">Loading current way values…</div>`;
+    const items = csv.rows, results = [];
+    let i = 0;
+    async function worker(){
+      while(i < items.length){
+        const it = items[i++];
+        try{
+          const res = await fetch(`${EDIT.api}/way/${it.id}.json`);
+          if(res.status === 404){ results.push({id:it.id, present:false, changes:[]}); continue; }
+          if(!res.ok) throw new Error("HTTP "+res.status);
+          const el = (await res.json()).elements[0];
+          const cur = (el && el.tags) || {};
+          const changes = Object.keys(it.tags).map(k=>{
+            const nv = it.tags[k], ov = cur[k];
+            return {k, ov, nv, status: ov===nv ? "same" : (ov==null ? "add" : "change")};
+          });
+          results.push({id:it.id, present:true, changes, tags:it.tags});
+        }catch(e){ results.push({id:it.id, present:false, error:String(e.message||e), changes:[]}); }
+      }
+    }
+    await Promise.all(Array.from({length: Math.min(6, items.length)}, worker));
+    editResults = results;
+    renderEditPreview(csv, results);
+    setEditStatus(`Preview ready for ${results.length} way(s).`);
+  }
+
+  function renderEditPreview(csv, results){
+    const cnt = s => results.reduce((a,r)=>a + r.changes.filter(c=>c.status===s).length, 0);
+    const add = cnt("add"), chg = cnt("change"), same = cnt("same");
+    const missing = results.filter(r=>!r.present && !r.error).length;
+    const errors = results.filter(r=>r.error).length;
+    const writable = results.filter(r=>r.present && r.changes.some(c=>c.status!=="same")).length;
+
+    const rows = [];
+    results.forEach(r=>{
+      if(r.error){ rows.push(`<tr><td>w${r.id}</td><td colspan="3" style="color:var(--red)">${esc(r.error)}</td></tr>`); return; }
+      if(!r.present){ rows.push(`<tr><td>w${r.id}</td><td colspan="3" style="color:var(--muted)">not found on ${EDIT.label}</td></tr>`); return; }
+      r.changes.forEach(c=>{
+        const cell = c.status==="add" ? `<span class="diff-add">+ ${esc(c.nv)}</span>`
+          : c.status==="change" ? `<span class="diff-chg">${esc(String(c.ov))} → ${esc(c.nv)}</span>`
+          : `<span style="color:var(--muted)">${esc(c.nv)} (unchanged)</span>`;
+        rows.push(`<tr>
+          <td><a href="${EDIT.web}/way/${r.id}" target="_blank" rel="noopener">w${r.id}</a></td>
+          <td>${esc(c.k)}</td><td class="tagdiff">${cell}</td><td>${c.status}</td>
+        </tr>`);
+      });
+    });
+
+    const allowed = isOwner();
+    const applyLabel = !editToken ? "Connect to OSM to apply"
+      : !allowed ? "🔒 Locked — not authorised"
+      : (add+chg) ? `Apply ${add+chg} change(s) to ${writable} way(s)` : "Nothing to apply";
+
+    $("#editreadout").innerHTML = `
+      <div class="eyebrow">Preview — writes to ${EDIT.label} <span class="sbx">${EDIT.label.toUpperCase()}</span></div>
+      <div class="scorecard">
+        <div class="score"><div class="v">${results.length}</div><div class="k">ways</div></div>
+        <div class="score"><div class="v">${add}</div><div class="k">tags to add</div></div>
+        <div class="score"><div class="v">${chg}</div><div class="k">tags to change</div></div>
+        <div class="score"><div class="v">${same}</div><div class="k">already correct</div></div>
+        <div class="score"><div class="v">${missing+errors}</div><div class="k">missing / error</div></div>
+      </div>
+      <div class="scrolltable"><table>
+        <thead><tr><th>Way</th><th>Tag</th><th>Change</th><th>Status</th></tr></thead>
+        <tbody>${rows.join("")}</tbody>
+      </table></div>
+      ${!allowed && editToken ? `<div class="locked">🔒 ${esc(lockMsg())}</div>` : ""}
+      <div class="row-actions">
+        <button id="editapply" class="btn"${allowed && (add+chg)?"":" disabled"}>${applyLabel}</button>
+      </div>
+      <div id="editresults"></div>
+      <p class="hint">Only adds/changes are written; unchanged, missing and errored rows are skipped. Each way keeps all its other tags and nodes. All edits go into one changeset on <b>${EDIT.label}</b>.</p>`;
+
+    const ab = $("#editapply");
+    if(ab && allowed && (add+chg)) ab.onclick = () => {
+      if(confirm(`Write ${add+chg} tag change(s) across ${writable} way(s) to ${EDIT.label}?`)) editApply(csv, results);
+    };
+  }
+
+  // ---- apply (changeset + per-way PUT) ----
+  async function editApply(csv, results){
+    if(!editToken){ setEditStatus("Connect to OSM first.", true); return; }
+    if(!isOwner()){ setEditStatus(lockMsg(), true); return; }
+    const toWrite = results.filter(r=>r.present && !r.error && r.changes.some(c=>c.status!=="same"));
+    if(!toWrite.length){ setEditStatus("Nothing to write.", true); return; }
+    const comment = ($("#csmsg").value.trim()) || `Bulk tag update (${csv.keys.join(", ")})`;
+    const ab = $("#editapply"); if(ab) ab.disabled = true;
+    try{
+      setEditStatus("Opening changeset…");
+      const csId = await osmCreateChangeset(comment);
+      const log = [];
+      for(const r of toWrite){
+        try{ const v = await osmUpdateWay(r.id, r.tags, csId); log.push({id:r.id, ok:true, v}); }
+        catch(e){ log.push({id:r.id, ok:false, msg:String(e.message||e)}); }
+        setEditStatus(`Writing to changeset ${csId}… ${log.length}/${toWrite.length}`);
+      }
+      await osmCloseChangeset(csId);
+      const ok = log.filter(l=>l.ok).length, bad = log.length-ok;
+      setEditStatus(`Done — changeset ${csId}: ${ok} updated${bad?`, ${bad} failed`:""}.`);
+      renderEditResults(csId, log);
+    }catch(e){ setEditStatus("Apply failed: "+(e.message||e), true); if(ab) ab.disabled=false; }
+  }
+
+  async function osmCreateChangeset(comment){
+    const xml = `<osm><changeset><tag k="created_by" v="RouteSense Editor"/><tag k="comment" v="${esc(comment)}"/></changeset></osm>`;
+    const res = await fetch(`${EDIT.api}/changeset/create`, {method:"PUT",
+      headers:{Authorization:"Bearer "+editToken, "Content-Type":"text/xml"}, body:xml});
+    if(!res.ok) throw new Error("changeset create HTTP "+res.status);
+    return (await res.text()).trim();
+  }
+  async function osmUpdateWay(id, tags, csId){
+    const res = await fetch(`${EDIT.api}/way/${id}`, {headers:{Authorization:"Bearer "+editToken}});
+    if(!res.ok) throw new Error("read HTTP "+res.status);
+    const doc = new DOMParser().parseFromString(await res.text(), "application/xml");
+    const way = doc.querySelector("way"); if(!way) throw new Error("no way element");
+    way.setAttribute("changeset", csId);
+    for(const k of Object.keys(tags)){
+      let tag = [...way.children].find(c=>c.tagName==="tag" && c.getAttribute("k")===k);
+      if(!tag){ tag = doc.createElement("tag"); tag.setAttribute("k", k); way.appendChild(tag); }
+      tag.setAttribute("v", tags[k]);
+    }
+    const put = await fetch(`${EDIT.api}/way/${id}`, {method:"PUT",
+      headers:{Authorization:"Bearer "+editToken, "Content-Type":"text/xml"},
+      body:`<osm>${new XMLSerializer().serializeToString(way)}</osm>`});
+    if(!put.ok) throw new Error("PUT HTTP "+put.status+" "+(await put.text()).slice(0,100));
+    return (await put.text()).trim();
+  }
+  function osmCloseChangeset(csId){
+    return fetch(`${EDIT.api}/changeset/${csId}/close`, {method:"PUT", headers:{Authorization:"Bearer "+editToken}});
+  }
+
+  function renderEditResults(csId, log){
+    const rows = log.map(l=>`<tr><td>w${l.id}</td><td>${l.ok?`<span class="diff-add">updated → v${l.v}</span>`:`<span class="diff-del">${esc(l.msg)}</span>`}</td></tr>`).join("");
+    $("#editresults").innerHTML = `
+      <div class="eyebrow" style="margin-top:16px">Result — changeset
+        <a href="${EDIT.web}/changeset/${csId}" target="_blank" rel="noopener">${csId} ↗</a></div>
+      <div class="scrolltable" style="max-height:240px"><table><tbody>${rows}</tbody></table></div>`;
+  }
+
+  // ---- init ----
+  (function init(){
+    const cid = localStorage.getItem("rse_cid");
+    if(cid) $("#oauthcid").value = cid;
+    if(new URLSearchParams(location.search).get("code")) handleOAuthRedirect();
+    else if(editToken) refreshOsmUser();
+    else renderAuthState();
+  })();
+})();
+</script>
+</body>
+</html>
