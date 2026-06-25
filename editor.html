@@ -35,6 +35,7 @@
   input:focus,textarea:focus{outline:2px solid var(--route); outline-offset:1px; border-color:var(--route)}
   textarea{font-family:'JetBrains Mono',monospace; font-size:13px; padding:10px 11px; border:1px solid var(--hairline); border-radius:8px; background:#fff; color:var(--ink); width:100%; resize:vertical; margin-top:12px}
   .sbx{display:inline-block; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px; background:#fbecd6; color:#8a560f; letter-spacing:.06em; vertical-align:1px}
+  .sbx.live{background:#f7dedb; color:#8c2018}
   .btn{font:inherit; font-weight:600; cursor:pointer; border:none; border-radius:8px; padding:10px 18px; background:var(--route); color:#fff}
   .btn:hover{background:var(--route-dark)}
   .btn.ghost{background:#fff; color:var(--ink); border:1px solid var(--hairline)}
@@ -74,13 +75,13 @@
   </header>
 
   <section class="card">
-    <div class="eyebrow">Connect <span class="sbx">SANDBOX</span></div>
+    <div class="eyebrow">Connect <span class="sbx live">LIVE OSM</span></div>
     <p class="hint" style="margin-top:8px">
-      Writes go to the OSM <b>sandbox</b> (<code>master.apis.dev.openstreetmap.org</code>) — a separate, throwaway database that does <b>not</b> touch the real map. Production way IDs don't exist on the sandbox, so test the login/changeset/write flow with a way you create there. Going live is a one-line change (the <code>EDIT</code> constant) once you're confident.
+      ⚠️ Writes go to the <b>live OpenStreetMap</b> (<code>api.openstreetmap.org</code>) — edits affect the <b>real map</b>. Each way in your CSV is written as its <b>own separate changeset</b>. Always Preview first; only adds/changes are written, and each way keeps all its existing tags and nodes.
     </p>
     <div class="form-row">
       <div class="field grow">
-        <label class="lbl" for="oauthcid">OSM OAuth 2.0 client ID (sandbox app)</label>
+        <label class="lbl" for="oauthcid">OSM OAuth 2.0 client ID (live app)</label>
         <input id="oauthcid" type="text" placeholder="paste your client_id" autocomplete="off">
       </div>
       <button id="oauthlogin" class="btn">Connect to OSM</button>
@@ -121,12 +122,13 @@
   // ============================================================
   const OWNER = "Arkskyle";
 
-  // Target server. SANDBOX is throwaway; to go live, swap to:
-  //   { label:"LIVE OSM", web:"https://www.openstreetmap.org", api:"https://api.openstreetmap.org/api/0.6" }
+  // Target server. Currently LIVE OSM — writes affect the REAL map.
+  // To return to the throwaway sandbox, swap to:
+  //   { label:"sandbox", web:"https://master.apis.dev.openstreetmap.org", api:"https://master.apis.dev.openstreetmap.org/api/0.6" }
   const EDIT = {
-    label: "sandbox",
-    web:   "https://master.apis.dev.openstreetmap.org",
-    api:   "https://master.apis.dev.openstreetmap.org/api/0.6",
+    label: "LIVE OSM",
+    web:   "https://www.openstreetmap.org",
+    api:   "https://api.openstreetmap.org/api/0.6",
   };
   const OAUTH_SCOPE = "read_prefs write_api";
   const REDIRECT = location.origin + location.pathname;
@@ -318,11 +320,11 @@
         <button id="editapply" class="btn"${allowed && (add+chg)?"":" disabled"}>${applyLabel}</button>
       </div>
       <div id="editresults"></div>
-      <p class="hint">Only adds/changes are written; unchanged, missing and errored rows are skipped. Each way keeps all its other tags and nodes. All edits go into one changeset on <b>${EDIT.label}</b>.</p>`;
+      <p class="hint">Only adds/changes are written; unchanged, missing and errored rows are skipped. Each way keeps all its other tags and nodes. Each way is written as its <b>own separate changeset</b> on <b>${EDIT.label}</b>.</p>`;
 
     const ab = $("#editapply");
     if(ab && allowed && (add+chg)) ab.onclick = () => {
-      if(confirm(`Write ${add+chg} tag change(s) across ${writable} way(s) to ${EDIT.label}?`)) editApply(csv, results);
+      if(confirm(`Write ${add+chg} change(s) to ${writable} way(s) on ${EDIT.label}, as ${writable} separate changesets?`)) editApply(csv, results);
     };
   }
 
@@ -334,20 +336,21 @@
     if(!toWrite.length){ setEditStatus("Nothing to write.", true); return; }
     const comment = ($("#csmsg").value.trim()) || `Bulk tag update (${csv.keys.join(", ")})`;
     const ab = $("#editapply"); if(ab) ab.disabled = true;
-    try{
-      setEditStatus("Opening changeset…");
-      const csId = await osmCreateChangeset(comment);
-      const log = [];
-      for(const r of toWrite){
-        try{ const v = await osmUpdateWay(r.id, r.tags, csId); log.push({id:r.id, ok:true, v}); }
-        catch(e){ log.push({id:r.id, ok:false, msg:String(e.message||e)}); }
-        setEditStatus(`Writing to changeset ${csId}… ${log.length}/${toWrite.length}`);
-      }
-      await osmCloseChangeset(csId);
-      const ok = log.filter(l=>l.ok).length, bad = log.length-ok;
-      setEditStatus(`Done — changeset ${csId}: ${ok} updated${bad?`, ${bad} failed`:""}.`);
-      renderEditResults(csId, log);
-    }catch(e){ setEditStatus("Apply failed: "+(e.message||e), true); if(ab) ab.disabled=false; }
+    // One changeset per way: open → write the single way → close, for each.
+    const log = [];
+    for(const r of toWrite){
+      try{
+        const csId = await osmCreateChangeset(comment);
+        const v = await osmUpdateWay(r.id, r.tags, csId);
+        await osmCloseChangeset(csId);
+        log.push({id:r.id, ok:true, v, csId});
+      }catch(e){ log.push({id:r.id, ok:false, msg:String(e.message||e)}); }
+      setEditStatus(`Writing… ${log.length}/${toWrite.length} way(s), one changeset each.`);
+    }
+    const ok = log.filter(l=>l.ok).length, bad = log.length-ok;
+    setEditStatus(`Done — ${ok} way(s) updated in ${ok} changeset(s)${bad?`, ${bad} failed`:""}.`);
+    renderEditResults(log);
+    if(ab && bad) ab.disabled = false;
   }
 
   async function osmCreateChangeset(comment){
@@ -378,11 +381,12 @@
     return fetch(`${EDIT.api}/changeset/${csId}/close`, {method:"PUT", headers:{Authorization:"Bearer "+editToken}});
   }
 
-  function renderEditResults(csId, log){
-    const rows = log.map(l=>`<tr><td>w${l.id}</td><td>${l.ok?`<span class="diff-add">updated → v${l.v}</span>`:`<span class="diff-del">${esc(l.msg)}</span>`}</td></tr>`).join("");
+  function renderEditResults(log){
+    const rows = log.map(l=>`<tr><td>w${l.id}</td><td>${l.ok
+      ? `<span class="diff-add">updated → v${l.v}</span> · <a href="${EDIT.web}/changeset/${l.csId}" target="_blank" rel="noopener">cs ${l.csId} ↗</a>`
+      : `<span class="diff-del">${esc(l.msg)}</span>`}</td></tr>`).join("");
     $("#editresults").innerHTML = `
-      <div class="eyebrow" style="margin-top:16px">Result — changeset
-        <a href="${EDIT.web}/changeset/${csId}" target="_blank" rel="noopener">${csId} ↗</a></div>
+      <div class="eyebrow" style="margin-top:16px">Result — one changeset per way</div>
       <div class="scrolltable" style="max-height:240px"><table><tbody>${rows}</tbody></table></div>`;
   }
 
