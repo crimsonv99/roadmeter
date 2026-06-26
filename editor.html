@@ -336,9 +336,12 @@
     if(!toWrite.length){ setEditStatus("Nothing to write.", true); return; }
     const comment = ($("#csmsg").value.trim()) || `Bulk tag update (${csv.keys.join(", ")})`;
     const ab = $("#editapply"); if(ab) ab.disabled = true;
-    // One changeset per way: open → write the single way → close, for each.
+    // One changeset per way: open → write the single way → close, for each,
+    // with a 2 s pause between ways to stay gentle on the API.
+    const sleep = ms => new Promise(res => setTimeout(res, ms));
     const log = [];
-    for(const r of toWrite){
+    for(let n=0; n<toWrite.length; n++){
+      const r = toWrite[n];
       try{
         const csId = await osmCreateChangeset(comment);
         const v = await osmUpdateWay(r.id, r.tags, csId);
@@ -346,6 +349,7 @@
         log.push({id:r.id, ok:true, v, csId});
       }catch(e){ log.push({id:r.id, ok:false, msg:String(e.message||e)}); }
       setEditStatus(`Writing… ${log.length}/${toWrite.length} way(s), one changeset each.`);
+      if(n < toWrite.length - 1) await sleep(2000);
     }
     const ok = log.filter(l=>l.ok).length, bad = log.length-ok;
     setEditStatus(`Done — ${ok} way(s) updated in ${ok} changeset(s)${bad?`, ${bad} failed`:""}.`);
