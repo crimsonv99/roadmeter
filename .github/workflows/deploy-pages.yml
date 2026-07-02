@@ -1,4 +1,5 @@
 name: Deploy web/ to GitHub Pages
+# Pages source: GitHub Actions
 
 # Builds the React app in web/ and publishes it to GitHub Pages.
 # Requires: repo Settings -> Pages -> Source = "GitHub Actions".
