@@ -185,22 +185,51 @@ export function RoadReadout({
         <table>
           <thead>
             <tr>
-              <th>Way (ref/name)</th>
+              <th className="num">Way ID</th>
+              <th>Name</th>
+              <th>Ref</th>
               <th className="num">Length (km)</th>
               <th className="num">maxspeed</th>
             </tr>
           </thead>
           <tbody>
             {sorted.map((w) => (
-              <tr key={w.id}>
+              <tr
+                key={w.id}
+                className="issrow"
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest("a")) return;
+                  mapRef.current?.zoomToWay(w.id);
+                }}
+              >
+                <td className="num" title="click to zoom the map to this way">
+                  {w.id}
+                </td>
                 <td>
-                  <a
-                    href={`https://www.openstreetmap.org/way/${w.id}`}
-                    target="_blank"
-                    rel="noopener"
-                  >
-                    {w.name}
-                  </a>
+                  {w.roadName ? (
+                    <a
+                      href={`https://www.openstreetmap.org/way/${w.id}`}
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      {w.roadName}
+                    </a>
+                  ) : (
+                    <span style={{ color: "var(--muted)" }}>—</span>
+                  )}
+                </td>
+                <td>
+                  {w.ref ? (
+                    <a
+                      href={`https://www.openstreetmap.org/way/${w.id}`}
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      {w.ref}
+                    </a>
+                  ) : (
+                    <span style={{ color: "var(--muted)" }}>—</span>
+                  )}
                 </td>
                 <td className="num">{w.km.toFixed(2)}</td>
                 <td className="num">
@@ -228,8 +257,9 @@ export function RoadReadout({
         <b>ref continuity</b> — ref changes or missing refs (🟡), <b>lanes</b> —
         odd <code>lanes</code> values or <code>turn:lanes</code> count
         mismatches (🟡), and <b>access</b> — <code>access/vehicle=no/private</code>{" "}
-        mid-route (🟡). Use the filter to focus on 🔴/🟠. Click an issue row to
-        zoom the map. Flags only — fix in iD/JOSM.
+        mid-route (🟡). Use the filter to focus on 🔴/🟠. Click an issue row —
+        or any row in “All ways” — to zoom the map to it. Flags only — fix in
+        iD/JOSM.
       </p>
     </div>
   );

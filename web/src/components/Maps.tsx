@@ -90,6 +90,7 @@ export function InspectMap({
 // with an imperative zoomToIssue() for issue-row clicks (zoomIssue).
 export interface RouteMapHandle {
   zoomToIssue: (idx: number) => void;
+  zoomToWay: (wayId: number) => void;
 }
 export const RouteMap = forwardRef<
   RouteMapHandle,
@@ -97,6 +98,9 @@ export const RouteMap = forwardRef<
 >(function RouteMap({ ways, issues }, ref) {
   const { containerRef, mapRef, freshLayer } = useLeafletMap();
   const markersRef = useRef<Map<number, any>>(new Map());
+  const waysRef = useRef<Map<number, { coords: LatLon[]; layer: any }>>(
+    new Map(),
+  );
 
   useEffect(() => {
     const L = getL();
@@ -104,14 +108,17 @@ export const RouteMap = forwardRef<
     const map = mapRef.current;
     if (!layer || !map) return;
     markersRef.current = new Map();
+    waysRef.current = new Map();
     const bounds: LatLon[] = [];
     ways.forEach((w) => {
       if (!w.coords || w.coords.length < 2) return;
-      L.polyline(w.coords, {
+      const poly = L.polyline(w.coords, {
         color: "#1C7A4B",
         weight: 3,
         opacity: 0.65,
       }).addTo(layer);
+      poly.bindPopup(`<b>${esc(w.name)}</b><br>way ${w.id}`);
+      waysRef.current.set(w.id, { coords: w.coords, layer: poly });
       w.coords.forEach((c) => bounds.push(c));
     });
     const COL: Record<string, string> = {
@@ -147,6 +154,15 @@ export const RouteMap = forwardRef<
         map.setView([is.where.lat, is.where.lon], 16);
         const mk = markersRef.current.get(idx);
         if (mk) mk.openPopup();
+        map.invalidateSize();
+      },
+      zoomToWay(wayId: number) {
+        const map = mapRef.current;
+        const entry = waysRef.current.get(wayId);
+        if (!map || !entry) return;
+        // frame the whole way, then pop its label — OSM-style focus
+        map.fitBounds(entry.coords, { maxZoom: 17, padding: [30, 30] });
+        entry.layer.openPopup();
         map.invalidateSize();
       },
     }),

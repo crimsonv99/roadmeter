@@ -101,6 +101,14 @@ th,td{text-align:left; padding:7px 6px; border-bottom:1px solid var(--hairline)}
 th{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600}
 td.num,th.num{text-align:right; font-family:'JetBrains Mono',monospace}
 .scrolltable{max-height:300px; overflow:auto}
+/* keep column headers visible while the table body scrolls */
+.scrolltable thead th{
+  position:sticky; top:0; z-index:1;
+  background:var(--panel);
+  /* inset shadow acts as the bottom border, which sticks with the header
+     (a normal border-bottom scrolls away under border-collapse) */
+  box-shadow:inset 0 -1px 0 var(--hairline);
+}
 #map{height:300px; border-radius:8px; border:1px solid var(--hairline); margin-top:14px}
 
 /* coverage bar */

@@ -4,7 +4,7 @@ import { RoadSidebar } from "./RoadSidebar";
 import { overpass } from "../lib/net";
 import { parseMaxspeed } from "../lib/osm";
 import { polylineKm } from "../lib/geo";
-import { roadQuery } from "../lib/query";
+import { parseIds, roadQuery, tagFilter } from "../lib/query";
 import {
   assembleRoute,
   coalesceComponents,
@@ -75,12 +75,32 @@ export default function RoadMode() {
       setStatus("Relation id must be numeric.", true);
       return;
     }
+    if (by === "wayids" && parseIds(query).length === 0) {
+      setStatus(
+        "Enter one or more numeric way ids (separate with ; or ,).",
+        true,
+      );
+      return;
+    }
     if (by === "ref" && !cc) {
       setStatus(
         "Pick a country for a ways-by-ref search (it scopes the query).",
         true,
       );
       return;
+    }
+    if (by === "tag") {
+      if (!tagFilter(query, match === "exact")) {
+        setStatus('Enter a tag, e.g. "highway=trunk" or "maxspeed".', true);
+        return;
+      }
+      if (!cc) {
+        setStatus(
+          "Pick a country for a tag search (it scopes the query).",
+          true,
+        );
+        return;
+      }
     }
 
     setFetching(true);
@@ -127,10 +147,17 @@ export default function RoadMode() {
         });
       }
       if (!ways.length) {
+        const idBased = by === "relid" || by === "wayids";
+        const what =
+          by === "relid"
+            ? "relation id"
+            : by === "wayids"
+              ? "way id list"
+              : "search";
         setStatus(
-          `No ways found for that ${by === "relid" ? "relation id" : "search"}${
-            cc ? ` in ${cc}` : ""
-          }. Try a different term or country.`,
+          `No ways found for that ${what}${!idBased && cc ? ` in ${cc}` : ""}. ${
+            idBased ? "Check the id(s) exist." : "Try a different term or country."
+          }`,
           true,
         );
         setReport({ kind: "text", text: "No ways to inspect." });
@@ -198,16 +225,30 @@ export default function RoadMode() {
               <option value="relref">Relation by ref</option>
               <option value="relid">Relation by id</option>
               <option value="ref">Ways by ref (no relation)</option>
+              <option value="wayids">Ways by id (list)</option>
+              <option value="tag">Ways by tag (key=value)</option>
             </select>
           </div>
           <div className="field grow">
             <label className="lbl" htmlFor="rquery">
-              Name / ref / id
+              {by === "wayids"
+                ? "Way ids"
+                : by === "tag"
+                  ? "Tag (key=value)"
+                  : "Name / ref / id"}
             </label>
             <input
               id="rquery"
               type="text"
-              placeholder="e.g. QL1; Quốc lộ 1; QL.1"
+              placeholder={
+                by === "wayids"
+                  ? "e.g. 701454823; 12345; 987654"
+                  : by === "tag"
+                    ? "e.g. highway=trunk · maxspeed=60 · surface"
+                    : by === "relid"
+                      ? "e.g. 12345"
+                      : "e.g. QL1; Quốc lộ 1; QL.1"
+              }
               autoComplete="off"
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -256,17 +297,41 @@ export default function RoadMode() {
           Highways only (ways tagged <code>highway=*</code>)
         </label>
         <div className="hint" style={{ marginTop: 8 }}>
-          <b>One value:</b> type the name or ref — e.g. <code>Quốc lộ 51</code>.
-          <br />
-          <b>Multiple values:</b> separate variants with <code>;</code> to match
-          any — e.g. <code>QL1; Quốc lộ 1; QL.1</code> (useful when OSM tags the
-          same road inconsistently).
-          <br />
-          <b>Match — Exact:</b> the value must equal the keyword (or contain it
-          as a <code>;</code>-list item, so <code>QL1</code> matches{" "}
-          <code>QL1;AH1</code> but not <code>QL1A</code>). <b>Almost:</b>{" "}
-          substring match (<code>QL1</code> also catches <code>QL1A</code>,{" "}
-          <code>QL12</code>). Always case-insensitive.
+          {by === "tag" ? (
+            <>
+              <b>Ways by tag:</b> enter <code>key=value</code> — e.g.{" "}
+              <code>highway=trunk</code>, <code>maxspeed=60</code> — or just a{" "}
+              <code>key</code> (e.g. <code>surface</code>) to match ways that
+              have it with any value.
+              <br />
+              <b>Match — Exact:</b> the value must equal exactly (
+              <code>highway=trunk</code>). <b>Almost:</b> the value contains the
+              text (<code>highway=trunk</code> also matches{" "}
+              <code>trunk_link</code>). Always case-insensitive. Pick a{" "}
+              <b>country</b> — it scopes the search.
+            </>
+          ) : by === "wayids" ? (
+            <>
+              <b>Ways by id:</b> paste one or more OSM way ids separated by{" "}
+              <code>;</code> or <code>,</code> — e.g.{" "}
+              <code>701454823; 12345; 987654</code>. Fetches exactly those ways.
+            </>
+          ) : (
+            <>
+              <b>One value:</b> type the name or ref — e.g.{" "}
+              <code>Quốc lộ 51</code>.
+              <br />
+              <b>Multiple values:</b> separate variants with <code>;</code> to
+              match any — e.g. <code>QL1; Quốc lộ 1; QL.1</code> (useful when OSM
+              tags the same road inconsistently).
+              <br />
+              <b>Match — Exact:</b> the value must equal the keyword (or contain
+              it as a <code>;</code>-list item, so <code>QL1</code> matches{" "}
+              <code>QL1;AH1</code> but not <code>QL1A</code>). <b>Almost:</b>{" "}
+              substring match (<code>QL1</code> also catches <code>QL1A</code>,{" "}
+              <code>QL12</code>). Always case-insensitive.
+            </>
+          )}
         </div>
         <div className={"status" + (status.err ? " err" : "")}>{status.msg}</div>
       </section>
